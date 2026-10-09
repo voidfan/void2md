@@ -1,0 +1,424 @@
+//! Lazy PDF document: open/repair, on-demand object resolution,
+//! object-stream caching, references, and dictionary access. Xref
+//! parsing, lexical parsing, filters, and security handlers are separate
+//! sibling modules behind this type.
+
+use anyhow::{anyhow, bail, Result};
+use elsa::FrozenMap;
+use rustc_hash::{FxHashMap, FxHashSet};
+use std::borrow::Cow;
+use std::cell::{Cell, RefCell};
+
+use super::crypto::{Decryptor, LegacyCrypt};
+use super::filters::decode_stream;
+use super::lexer::ObjLexer;
+use super::values::{dget, Dict, Val};
+use super::xref::{find_startxref, XrefEntry};
+
+/// Parsed PDF document. Resolved values borrow the document as well as its
+/// input, because compressed-object and decrypted-stream bytes are owned by
+/// document-local caches.
+///
+/// ```compile_fail
+/// use void2md::converters::pdf::own_pdf::Pdf;
+/// let bytes = b"1 0 obj null endobj";
+/// let value;
+/// {
+///     let pdf = Pdf::parse(bytes).unwrap();
+///     value = pdf.object(1).unwrap();
+/// }
+/// drop(value);
+/// ```
+pub struct Pdf<'a> {
+    pub(super) data: &'a [u8],
+    /// obj num → xref entry.
+    pub(super) xref: FxHashMap<u32, XrefEntry>,
+    pub trailer: Dict<'a>,
+    /// Decompressed object streams, keyed by their object number.
+    pub(super) objstm_cache: FrozenMap<u32, Box<ObjStm>>,
+    /// Object streams currently being resolved. A separate set makes
+    /// cyclic InStream references an error instead of recursive descent.
+    pub(super) objstm_in_progress: RefCell<FxHashSet<u32>>,
+    /// AES-256 stream decryption (V5 standard handler), when active.
+    pub(super) decrypt: RefCell<Option<Decryptor>>,
+    /// Legacy (V1/V2/V4) decryption: per-object keys.
+    pub(super) legacy: RefCell<Option<LegacyCrypt>>,
+    /// Decrypted stream bytes for legacy encryption, keyed by object
+    /// number (entries are never evicted, so returned slices stay valid).
+    pub(super) legacy_cache: FrozenMap<u32, Box<[u8]>>,
+    /// Decoded streams that many pages share — font programs, ToUnicode
+    /// and encoding CMaps — keyed by the raw slice's location. All raw
+    /// slices borrow document-owned storage that is never evicted, so
+    /// the (address, length) pair identifies a stream for the
+    /// document's lifetime. One decode instead of one per page.
+    pub(super) stream_cache: FrozenMap<(usize, usize), Box<[u8]>>,
+    pub(super) stream_cache_bytes: Cell<usize>,
+}
+
+pub(super) struct ObjStm {
+    pub(super) data: Vec<u8>,
+    /// (obj num, offset into data after First).
+    pub(super) offsets: Vec<(u32, usize)>,
+    pub(super) first: usize,
+}
+
+const MAX_STREAM_CACHE_BYTES: usize = 64 * 1024 * 1024;
+
+impl<'a> Pdf<'a> {
+    pub fn parse(data: &'a [u8]) -> Result<Pdf<'a>> {
+        let mut pdf = Pdf {
+            data,
+            xref: FxHashMap::default(),
+            trailer: Vec::new(),
+            objstm_cache: FrozenMap::new(),
+            objstm_in_progress: RefCell::new(FxHashSet::default()),
+            decrypt: RefCell::new(None),
+            legacy: RefCell::new(None),
+            legacy_cache: FrozenMap::new(),
+            stream_cache: FrozenMap::new(),
+            stream_cache_bytes: Cell::new(0),
+        };
+        let loaded = match find_startxref(data) {
+            Ok(start) => pdf.load_xref_chain(start).is_ok() && !pdf.trailer.is_empty(),
+            Err(_) => false,
+        };
+        if !loaded {
+            pdf.repair_scan()?;
+        }
+        // Empty-password AES-256 documents decrypt transparently; anything
+        // else errors here and the caller reports the failure.
+        pdf.setup_decryption()?;
+        Ok(pdf)
+    }
+
+    /// Damaged-file recovery: scavenge "N G obj" markers for offsets and
+    /// find a trailer (or any /Root-bearing catalog) the hard way.
+    pub(super) fn repair_scan(&mut self) -> Result<()> {
+        self.xref.clear();
+        let data = self.data;
+        let finder = memchr::memmem::Finder::new(b" obj");
+        let mut at = 0usize;
+        while let Some(rel) = finder.find(&data[at..]) {
+            let hit = at + rel;
+            // Walk back over "N G" digits/whitespace to the object number.
+            let mut j = hit;
+            let mut seen_gen = false;
+            let mut seen_num = false;
+            let mut gen_end = 0usize;
+            let mut gen_start = 0usize;
+            let mut num_end = 0usize;
+            let mut num_start = 0usize;
+            while j > 0 {
+                let b = data[j - 1];
+                if b.is_ascii_digit() {
+                    if !seen_gen {
+                        gen_end = j;
+                        while j > 0 && data[j - 1].is_ascii_digit() {
+                            j -= 1;
+                        }
+                        gen_start = j;
+                        seen_gen = true;
+                    } else {
+                        num_end = j;
+                        while j > 0 && data[j - 1].is_ascii_digit() {
+                            j -= 1;
+                        }
+                        num_start = j;
+                        seen_num = true;
+                        break;
+                    }
+                } else if b == b' ' || b == b'\r' || b == b'\n' {
+                    j -= 1;
+                } else {
+                    break;
+                }
+            }
+            if seen_num && num_end > num_start {
+                let num: u32 = std::str::from_utf8(&data[num_start..num_end])
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0);
+                let generation: u16 = std::str::from_utf8(&data[gen_start..gen_end])
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0);
+                // Later definitions win in damaged files.
+                self.xref.insert(
+                    num,
+                    XrefEntry::Offset {
+                        at: num_start,
+                        generation,
+                    },
+                );
+            }
+            at = hit + 4;
+        }
+        if self.xref.is_empty() {
+            bail!("repair scan found no objects");
+        }
+
+        // Trailer: last "trailer" keyword, else hunt for a /Type /Catalog.
+        if let Some(t) = memchr::memmem::rfind(data, b"trailer") {
+            let mut lx = ObjLexer::new(data, t + 7);
+            if let Ok(Val::Dict(d)) = lx.value() {
+                self.trailer = d;
+            }
+        }
+        if dget(&self.trailer, b"Root").is_none() {
+            let nums: Vec<u32> = self.xref.keys().copied().collect();
+            for num in nums {
+                if let Ok(Val::Dict(d)) = self.object(num) {
+                    if matches!(dget(&d, b"Type"), Some(Val::Name(b"Catalog"))) {
+                        self.trailer = vec![(b"Root".as_slice(), Val::Ref(num))];
+                        break;
+                    }
+                }
+            }
+        }
+        if dget(&self.trailer, b"Root").is_none() {
+            bail!("repair scan found no catalog");
+        }
+        Ok(())
+    }
+
+    /// Resolve an object by number, parsing it on demand.
+    pub fn object<'s>(&'s self, num: u32) -> Result<Val<'s>>
+    where
+        'a: 's,
+    {
+        match self.xref.get(&num) {
+            Some(XrefEntry::Offset { at, generation }) => {
+                let mut lx = ObjLexer::new(self.data, *at);
+                let (n, v) = lx.indirect_object(self)?;
+                if n != num {
+                    bail!("xref offset mismatch for {num}");
+                }
+                if self.legacy.borrow().is_some() {
+                    if let Val::Stream(d, raw) = v {
+                        let plain = self.legacy_decrypt(num, *generation, raw)?;
+                        return Ok(Val::Stream(d, plain));
+                    }
+                }
+                Ok(v)
+            }
+            Some(XrefEntry::InStream { stream_obj, index }) => {
+                let (stream_obj, index) = (*stream_obj, *index);
+                self.ensure_objstm(stream_obj)?;
+                let stm = self
+                    .objstm_cache
+                    .get(&stream_obj)
+                    .ok_or_else(|| anyhow!("objstm"))?;
+                let (onum, off) = *stm
+                    .offsets
+                    .get(index)
+                    .ok_or_else(|| anyhow!("objstm index"))?;
+                if onum != num {
+                    bail!("objstm num mismatch");
+                }
+                let mut lx = ObjLexer::new(stm.data.as_slice(), stm.first + off);
+                lx.value_with(self)
+            }
+            None => Ok(Val::Null),
+        }
+    }
+
+    pub(super) fn ensure_objstm(&self, num: u32) -> Result<()> {
+        if self.objstm_cache.get(&num).is_some() {
+            return Ok(());
+        }
+        if !self.objstm_in_progress.borrow_mut().insert(num) {
+            bail!("cyclic ObjStm dependency at object {num}");
+        }
+        let result = (|| {
+            let Val::Stream(dict, raw) = self.object(num)? else {
+                bail!("not an objstm");
+            };
+            let data = decode_stream(&dict, raw, self)?;
+            let n = dget(&dict, b"N").and_then(|v| v.as_num()).unwrap_or(0.0) as usize;
+            let first = dget(&dict, b"First")
+                .and_then(|v| v.as_num())
+                .unwrap_or(0.0) as usize;
+            // Every ObjStm header pair needs at least "N O" (three bytes,
+            // before separators). Reject impossible counts before allocation.
+            if n > data.len() / 3 || first > data.len() {
+                bail!("ObjStm /N or /First exceeds decoded stream");
+            }
+            let mut offsets = Vec::with_capacity(n);
+            {
+                let mut lx = ObjLexer::new(&data, 0);
+                for _ in 0..n {
+                    lx.skip_ws();
+                    let onum = lx.uint()? as u32;
+                    lx.skip_ws();
+                    let off = lx.uint()? as usize;
+                    if off > data.len() - first {
+                        bail!("ObjStm object offset past decoded stream");
+                    }
+                    offsets.push((onum, off));
+                }
+            }
+            self.objstm_cache.insert(
+                num,
+                Box::new(ObjStm {
+                    data,
+                    offsets,
+                    first,
+                }),
+            );
+            Ok(())
+        })();
+        self.objstm_in_progress.borrow_mut().remove(&num);
+        result
+    }
+
+    /// Deep-resolve a value: follow Ref until a concrete value.
+    pub fn resolve<'s>(&'s self, v: &Val<'s>) -> Result<Val<'s>>
+    where
+        'a: 's,
+    {
+        let mut cur = v.clone();
+        for _ in 0..32 {
+            match cur {
+                Val::Ref(n) => cur = self.object(n)?,
+                other => return Ok(other),
+            }
+        }
+        bail!("reference chain too deep or cyclic")
+    }
+
+    pub fn dict_get<'s>(&'s self, dict: &Dict<'s>, key: &[u8]) -> Result<Option<Val<'s>>>
+    where
+        'a: 's,
+    {
+        match dget(dict, key) {
+            Some(v) => Ok(Some(self.resolve(v)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// `decode_stream` with a bounded document-lifetime cache for font
+    /// programs and CMaps shared across pages. The raw slice must come
+    /// from the supplied stream dictionary; its stable document-owned
+    /// location is the cache identity. Failed decodes are not cached,
+    /// and entries beyond the cache budget remain one-shot owned data.
+    pub(crate) fn decode_stream_cached<'s>(
+        &'s self,
+        dict: &Dict<'s>,
+        raw: &'s [u8],
+    ) -> Result<Cow<'s, [u8]>>
+    where
+        'a: 's,
+    {
+        let key = (raw.as_ptr() as usize, raw.len());
+        if let Some(bytes) = self.stream_cache.get(&key) {
+            return Ok(Cow::Borrowed(bytes));
+        }
+        let decoded = decode_stream(dict, raw, self)?;
+        let cached = self.stream_cache_bytes.get();
+        if decoded.len() <= MAX_STREAM_CACHE_BYTES.saturating_sub(cached) {
+            let len = decoded.len();
+            let bytes = self.stream_cache.insert(key, decoded.into_boxed_slice());
+            self.stream_cache_bytes.set(cached + len);
+            Ok(Cow::Borrowed(bytes))
+        } else {
+            Ok(Cow::Owned(decoded))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repair_scan_preserves_object_generation() {
+        let data = b"%PDF-1.4\n1 7 obj << /Type /Catalog /Pages 2 0 R >> endobj\n2 0 obj << /Type /Pages /Kids [] /Count 0 >> endobj\ntrailer << /Root 1 7 R >>";
+        let pdf = Pdf::parse(data).unwrap();
+        assert!(matches!(
+            pdf.xref.get(&1),
+            Some(XrefEntry::Offset { generation: 7, .. })
+        ));
+    }
+
+    #[test]
+    fn object_stream_count_must_fit_decoded_header() {
+        let data = b"1 0 obj << /Type /ObjStm /N 100000 /First 0 /Length 0 >> stream
+
+endstream
+endobj";
+        let mut xref = FxHashMap::default();
+        xref.insert(
+            1,
+            XrefEntry::Offset {
+                at: 0,
+                generation: 0,
+            },
+        );
+        let pdf = Pdf {
+            data,
+            xref,
+            trailer: Vec::new(),
+            objstm_cache: FrozenMap::new(),
+            objstm_in_progress: RefCell::new(FxHashSet::default()),
+            decrypt: RefCell::new(None),
+            legacy: RefCell::new(None),
+            legacy_cache: FrozenMap::new(),
+            stream_cache: FrozenMap::new(),
+            stream_cache_bytes: Cell::new(0),
+        };
+        let err = pdf.ensure_objstm(1).unwrap_err().to_string();
+        assert!(err.contains("ObjStm /N"), "wrong rejection path: {err}");
+    }
+
+    #[test]
+    fn decode_stream_cached_returns_one_stable_buffer() {
+        let data = b"%PDF-1.4
+1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
+2 0 obj << /Type /Pages /Kids [] /Count 0 >> endobj
+trailer << /Root 1 0 R >>";
+        let pdf = Pdf::parse(data).unwrap();
+        let dict = vec![(b"Length".as_slice(), Val::Num(5.0))];
+        let raw: &[u8] = b"hello";
+        let first = pdf.decode_stream_cached(&dict, raw).unwrap();
+        let second = pdf.decode_stream_cached(&dict, raw).unwrap();
+        assert_eq!(first.as_ref(), b"hello");
+        assert!(
+            std::ptr::eq(first.as_ptr(), second.as_ptr()),
+            "second decode must reuse the cached buffer"
+        );
+        assert_eq!(pdf.stream_cache_bytes.get(), 5);
+    }
+
+    #[test]
+    fn cyclic_object_stream_dependencies_are_rejected() {
+        let data = b"";
+        let mut xref = FxHashMap::default();
+        xref.insert(
+            1,
+            XrefEntry::InStream {
+                stream_obj: 2,
+                index: 0,
+            },
+        );
+        xref.insert(
+            2,
+            XrefEntry::InStream {
+                stream_obj: 1,
+                index: 0,
+            },
+        );
+        let pdf = Pdf {
+            data,
+            xref,
+            trailer: Vec::new(),
+            objstm_cache: FrozenMap::new(),
+            objstm_in_progress: RefCell::new(FxHashSet::default()),
+            decrypt: RefCell::new(None),
+            legacy: RefCell::new(None),
+            legacy_cache: FrozenMap::new(),
+            stream_cache: FrozenMap::new(),
+            stream_cache_bytes: Cell::new(0),
+        };
+        assert!(pdf.object(1).is_err());
+    }
+}

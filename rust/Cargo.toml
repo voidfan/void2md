@@ -1,0 +1,75 @@
+[package]
+name = "void2md"
+version = "0.6.1"
+edition = "2021"
+description = "Convert anything to markdown."
+license = "MIT"
+
+[dependencies]
+aes = "0.8"
+anyhow = "1"
+base64 = "0.22"  # Add base64 encoding support for embedded images
+cbc = "0.1"
+elsa = "1.11"
+clap = { version = "4", features = ["derive"] }
+ego-tree = "0.11"
+# Not used directly: pins zip's flate2 to the zlib-rs backend, the fastest
+# inflate for the ZIP-based formats (docx/pptx/xlsx/epub). Output bytes are
+# identical; only decompression speed changes.
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+kamadak-exif = "0.6.1"
+lofty = "0.25.0"
+memchr = "2"
+# PNG encoding for extracted PDF images (pure Rust, MIT/Apache).
+png = "0.18"
+napi = { version = "2", default-features = false, features = ["napi8", "async"], optional = true }
+napi-derive = { version = "2", optional = true }
+regex = "1.13.1"
+roxmltree = "0.21.1"
+rustc-hash = "2"
+# "deterministic" keeps attributes in source order (IndexMap) — required for
+# byte-parity with domino's outerHTML when tables are kept as raw HTML.
+scraper = { version = "0.27.0", features = ["deterministic"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+sha2 = "0.10"
+ureq = "3.4.0"
+zip = "8.6.0"
+hayro-jbig2 = { version = "0.3", default-features = false, features = ["std", "simd"] }
+unicode-normalization = "0.1"
+mimalloc = "0.1.52"
+
+[features]
+default = ["cli"]
+# The clap CLI binary. Deselected by npm's build:native (napi symbols only
+# resolve inside a Node process, so the bin cannot link with "napi" active).
+cli = []
+napi = ["dep:napi", "dep:napi-derive", "dep:napi-build"]
+
+[lints.clippy]
+# The PDF pipeline and HTML→MD engine are line-for-line ports of the TS
+# originals (and of JSC's StableSort.h). Index-based loops intentionally
+# mirror the source structure to keep the ports auditable.
+needless_range_loop = "allow"
+# CTM mirrors the TS type name (PDF current transformation matrix).
+upper_case_acronyms = "allow"
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
+strip = "symbols"
+
+[build-dependencies]
+napi-build = { version = "2", optional = true }
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "void2md"
+path = "src/main.rs"
+required-features = ["cli"]
+
+[[bench]]
+name = "engine"
+harness = false

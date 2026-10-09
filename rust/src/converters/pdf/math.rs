@@ -1,0 +1,796 @@
+//! Math-run detection and Unicode → LaTeX emission.
+//!
+//! arXiv equations reach render as Unicode text (∇f(x) ≤ ‖v‖) with
+//! private-use sentinels marking super/subscript runs (attached at
+//! merge time in shared.rs). This module finds the mathematical runs
+//! inside a line, converts them to LaTeX, and wraps them in `$…$`;
+//! the sentinels are stripped from everything else.
+
+use unicode_normalization::UnicodeNormalization;
+
+use super::shared::{SUB_CLOSE, SUB_OPEN, SUP_CLOSE, SUP_OPEN};
+
+/// Is this character strong evidence of mathematics?
+fn is_strong_math(c: char) -> bool {
+    matches!(c,
+        '\u{2200}'..='\u{22FF}'   // mathematical operators
+        | '\u{2A00}'..='\u{2AFF}' // supplemental operators
+        | '\u{27E6}'..='\u{27EB}' // mathematical brackets
+        | '\u{2190}'..='\u{21FF}' // arrows
+        | '\u{0370}'..='\u{03FF}' // Greek
+        | '\u{2100}'..='\u{214F}' // letterlike (ℓ, ℝ, ℑ…)
+        | '\u{1D400}'..='\u{1D7FF}' // mathematical alphanumerics
+        | '\u{2308}'..='\u{230B}' // ceilings and floors
+        | '\u{2032}' | '\u{2033}' // primes
+        | '\u{2016}'              // double bar
+        | '\u{00B1}' | '\u{00D7}' | '\u{00F7}' | '\u{00AC}'
+        | '\u{0338}'              // combining negation slash
+    ) || accent_command(c).is_some()
+    // Script sentinels are NOT strong on their own: footnote markers
+    // in prose carry them too. They only convert inside a run that
+    // real math characters established.
+}
+
+fn has_strong_math(s: &str) -> bool {
+    s.chars().any(is_strong_math)
+}
+
+fn has_intrinsic_math(s: &str) -> bool {
+    s.chars().any(|c| ('\u{1D400}'..='\u{1D7FF}').contains(&c))
+}
+
+/// May this word sit INSIDE a math run without being evidence itself?
+/// Short identifier/operator material, script-carrying words, and
+/// standard function names.
+fn is_weak_math_word(s: &str) -> bool {
+    // Script structure always joins the run it sits in.
+    if s.chars().any(super::shared::is_script_sentinel) {
+        return true;
+    }
+    let n = s.chars().count();
+    if n == 0 || n > 8 {
+        return false;
+    }
+    // Standard function names, possibly glued to parens.
+    let bare = s
+        .trim_end_matches(['(', ')', ',', '.', ';', ':'])
+        .trim_start_matches('(');
+    if matches!(
+        bare,
+        "sign"
+            | "sin"
+            | "cos"
+            | "tan"
+            | "log"
+            | "ln"
+            | "exp"
+            | "min"
+            | "max"
+            | "lim"
+            | "sup"
+            | "inf"
+            | "det"
+            | "tr"
+            | "dim"
+            | "deg"
+            | "mod"
+            | "argmin"
+            | "argmax"
+    ) {
+        return true;
+    }
+    let alpha_run = s.chars().filter(|c| c.is_ascii_alphabetic()).count();
+    if alpha_run > 2 {
+        return false;
+    }
+    // Short English words are prose, not identifiers.
+    if matches!(
+        s.trim_end_matches([',', '.', ';', ':']),
+        "as" | "at"
+            | "be"
+            | "by"
+            | "do"
+            | "he"
+            | "if"
+            | "in"
+            | "is"
+            | "it"
+            | "no"
+            | "of"
+            | "on"
+            | "or"
+            | "so"
+            | "to"
+            | "up"
+            | "we"
+            | "an"
+            | "my"
+            | "me"
+            | "us"
+            | "go"
+    ) {
+        return false;
+    }
+    s.chars().all(|c| {
+        c.is_ascii_alphanumeric()
+            || matches!(
+                c,
+                '=' | '+'
+                    | '-'
+                    | '*'
+                    | '/'
+                    | '('
+                    | ')'
+                    | '['
+                    | ']'
+                    | '{'
+                    | '}'
+                    | '|'
+                    | '<'
+                    | '>'
+                    | ','
+                    | '.'
+                    | ':'
+                    | ';'
+                    | '!'
+                    | '\''
+            )
+    })
+}
+
+/// TeX command for a supported combining mathematical accent.
+fn accent_command(c: char) -> Option<&'static str> {
+    Some(match c {
+        '\u{0300}' => "grave",
+        '\u{0301}' => "acute",
+        '\u{0302}' => "hat",
+        '\u{0303}' => "tilde",
+        '\u{0304}' => "bar",
+        '\u{0306}' => "breve",
+        '\u{0307}' => "dot",
+        '\u{0308}' => "ddot",
+        '\u{030A}' => "mathring",
+        '\u{030C}' => "check",
+        _ => return None,
+    })
+}
+
+/// Consecutive PDF text runs can split one exponent/subscript into
+/// several same-role fragments. TeX rejects `x^{a}^{b}`; join the
+/// sentinel boundary into one script atom before emission.
+fn coalesce_adjacent_scripts(run: &str) -> String {
+    let chars: Vec<char> = run.chars().collect();
+    let mut out = String::with_capacity(run.len());
+    let mut i = 0usize;
+    while i < chars.len() {
+        let c = chars[i];
+        let matching_open = match c {
+            SUP_CLOSE => Some(SUP_OPEN),
+            SUB_CLOSE => Some(SUB_OPEN),
+            _ => None,
+        };
+        if let Some(open) = matching_open {
+            let mut next = i + 1;
+            while next < chars.len() && chars[next].is_whitespace() {
+                next += 1;
+            }
+            if next < chars.len() && chars[next] == open {
+                out.push(' ');
+                i = next + 1;
+                continue;
+            }
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
+}
+
+/// Merge adjacent same-role TeX script groups after Unicode emission.
+/// This is the second boundary where fragments meet: line grouping may
+/// concatenate independently merged text boxes after sentinel capture.
+fn coalesce_repeated_tex_scripts(tex: &str) -> String {
+    let input: Vec<char> = tex.chars().collect();
+    let mut out: Vec<char> = Vec::with_capacity(input.len());
+    let mut i = 0usize;
+    while i < input.len() {
+        let kind = input[i];
+        if !matches!(kind, '^' | '_') || input.get(i + 1) != Some(&'{') {
+            out.push(kind);
+            i += 1;
+            continue;
+        }
+
+        let mut depth = 1usize;
+        let mut end = i + 2;
+        while end < input.len() && depth > 0 {
+            match input[end] {
+                '{' => depth += 1,
+                '}' => depth -= 1,
+                _ => {}
+            }
+            end += 1;
+        }
+        if depth != 0 {
+            out.push(kind);
+            i += 1;
+            continue;
+        }
+
+        let mut previous_end = out.len();
+        while previous_end > 0 && out[previous_end - 1].is_whitespace() {
+            previous_end -= 1;
+        }
+        let mut previous_open = None;
+        if previous_end > 0 && out[previous_end - 1] == '}' {
+            let mut reverse_depth = 1usize;
+            let mut cursor = previous_end - 1;
+            while cursor > 0 {
+                cursor -= 1;
+                match out[cursor] {
+                    '}' => reverse_depth += 1,
+                    '{' => {
+                        reverse_depth -= 1;
+                        if reverse_depth == 0 {
+                            previous_open = Some(cursor);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let same_previous = previous_open.is_some_and(|open| open > 0 && out[open - 1] == kind);
+        if same_previous {
+            out.truncate(previous_end - 1); // previous closing brace
+            out.push(' ');
+            out.extend_from_slice(&input[i + 2..end - 1]);
+            out.push('}');
+        } else {
+            out.extend_from_slice(&input[i..end]);
+        }
+        i = end;
+    }
+    out.into_iter().collect()
+}
+
+/// Convert one run already classified as mathematical to valid LaTeX.
+fn to_latex(run: &str) -> String {
+    let scripts_joined = coalesce_adjacent_scripts(run);
+    let normalized: String = scripts_joined.nfd().collect();
+    let mut out = String::with_capacity(normalized.len() * 2);
+    let mut pending_not = false;
+    let mut chars = normalized.chars().peekable();
+    while let Some(c) = chars.next() {
+        // PDF accent glyphs become combining marks during extraction.
+        // Fold base+mark into one structural TeX atom.
+        if !super::shared::is_script_sentinel(c) {
+            if let Some(&mark) = chars.peek() {
+                if let Some(command) = accent_command(mark) {
+                    chars.next();
+                    out.push('\\');
+                    out.push_str(command);
+                    out.push('{');
+                    out.push(c);
+                    out.push('}');
+                    continue;
+                }
+            }
+        }
+        if c == '\u{0338}' {
+            pending_not = true;
+            continue;
+        }
+        // Unsupported combining marks are extraction artifacts from
+        // font overlays. Raw marks make KaTeX reject the whole run.
+        if ('\u{0300}'..='\u{036F}').contains(&c) {
+            continue;
+        }
+        if pending_not {
+            out.push_str(r"\not ");
+            pending_not = false;
+        }
+        let mapped: &str = match c {
+            SUP_OPEN => "^{",
+            SUP_CLOSE | SUB_CLOSE => "}",
+            SUB_OPEN => "_{",
+            '≤' => r"\le ",
+            '≥' => r"\ge ",
+            '≠' => r"\neq ",
+            '∈' => r"\in ",
+            '∉' => r"\notin ",
+            '∋' => r"\ni ",
+            '⊂' => r"\subset ",
+            '⊆' => r"\subseteq ",
+            '⊃' => r"\supset ",
+            '⊇' => r"\supseteq ",
+            '∪' => r"\cup ",
+            '∩' => r"\cap ",
+            '∧' => r"\wedge ",
+            '∨' => r"\vee ",
+            '∀' => r"\forall ",
+            '∃' => r"\exists ",
+            '∅' => r"\emptyset ",
+            '∇' => r"\nabla ",
+            '∂' => r"\partial ",
+            '∑' => r"\sum ",
+            '∏' => r"\prod ",
+            '∐' => r"\coprod ",
+            '∫' => r"\int ",
+            '∮' => r"\oint ",
+            // Without radical geometry we do not know the radicand.
+            // An empty group keeps the Unicode radical renderable and
+            // valid; a later structural pass can replace it.
+            '√' => r"\sqrt{} ",
+            '∞' => r"\infty ",
+            '±' => r"\pm ",
+            '∓' => r"\mp ",
+            '×' => r"\times ",
+            '÷' => r"\div ",
+            '⋅' => r"\cdot ",
+            '∗' => "*",
+            '∘' => r"\circ ",
+            '‖' => r"\|",
+            '⟨' => r"\langle ",
+            '⟩' => r"\rangle ",
+            '⌊' => r"\lfloor ",
+            '⌋' => r"\rfloor ",
+            '⌈' => r"\lceil ",
+            '⌉' => r"\rceil ",
+            '→' => r"\to ",
+            '←' => r"\leftarrow ",
+            '↦' => r"\mapsto ",
+            '⇒' => r"\Rightarrow ",
+            '⇐' => r"\Leftarrow ",
+            '↔' => r"\leftrightarrow ",
+            '⇔' => r"\Leftrightarrow ",
+            '∼' => r"\sim ",
+            '≃' => r"\simeq ",
+            '≈' => r"\approx ",
+            '≅' => r"\cong ",
+            '≡' => r"\equiv ",
+            '≍' => r"\asymp ",
+            '∝' => r"\propto ",
+            '≪' => r"\ll ",
+            '≫' => r"\gg ",
+            '≺' => r"\prec ",
+            '≻' => r"\succ ",
+            '⪯' => r"\preceq ",
+            '⪰' => r"\succeq ",
+            '⊥' => r"\perp ",
+            '⊤' => r"\top ",
+            '⊢' => r"\vdash ",
+            '⊣' => r"\dashv ",
+            '⊕' => r"\oplus ",
+            '⊗' => r"\otimes ",
+            '⊖' => r"\ominus ",
+            '⊙' => r"\odot ",
+            '⊔' => r"\sqcup ",
+            '⊓' => r"\sqcap ",
+            '∖' => r"\setminus ",
+            '∣' => r"\mid ",
+            '∥' => r"\parallel ",
+            '∴' => r"\therefore ",
+            '∵' => r"\because ",
+            '⋆' => r"\star ",
+            '⋄' => r"\diamond ",
+            '·' => r"\cdot ",
+            '−' | '–' => "-",
+            'ℓ' => r"\ell ",
+            'ℏ' => r"\hbar ",
+            'ℜ' => r"\Re ",
+            'ℑ' => r"\Im ",
+            'ℵ' => r"\aleph ",
+            '℘' => r"\wp ",
+            '\'' | '′' => r"\prime ",
+            '″' => r"\prime \prime ",
+            // Greek lowercase.
+            'α' => r"\alpha ",
+            'β' => r"\beta ",
+            'γ' => r"\gamma ",
+            'δ' => r"\delta ",
+            'ε' => r"\varepsilon ",
+            'ϵ' => r"\epsilon ",
+            'ζ' => r"\zeta ",
+            'η' => r"\eta ",
+            'θ' => r"\theta ",
+            'ϑ' => r"\vartheta ",
+            'ι' => r"\iota ",
+            'κ' => r"\kappa ",
+            'λ' => r"\lambda ",
+            'μ' => r"\mu ",
+            'ν' => r"\nu ",
+            'ξ' => r"\xi ",
+            'π' => r"\pi ",
+            'ϖ' => r"\varpi ",
+            'ρ' => r"\rho ",
+            'ϱ' => r"\varrho ",
+            'σ' => r"\sigma ",
+            'ς' => r"\varsigma ",
+            'τ' => r"\tau ",
+            'υ' => r"\upsilon ",
+            'φ' => r"\varphi ",
+            'ϕ' => r"\phi ",
+            'χ' => r"\chi ",
+            'ψ' => r"\psi ",
+            'ω' => r"\omega ",
+            // Greek uppercase.
+            'Γ' => r"\Gamma ",
+            'Δ' => r"\Delta ",
+            'Θ' => r"\Theta ",
+            'Λ' => r"\Lambda ",
+            'Ξ' => r"\Xi ",
+            'Π' => r"\Pi ",
+            'Σ' => r"\Sigma ",
+            'Υ' => r"\Upsilon ",
+            'Φ' => r"\Phi ",
+            'Ψ' => r"\Psi ",
+            'Ω' => r"\Omega ",
+            // Blackboard and script letters.
+            'ℝ' => r"\mathbb{R}",
+            'ℕ' => r"\mathbb{N}",
+            'ℤ' => r"\mathbb{Z}",
+            'ℚ' => r"\mathbb{Q}",
+            'ℂ' => r"\mathbb{C}",
+            'ℍ' => r"\mathbb{H}",
+            'ℙ' => r"\mathbb{P}",
+            '%' => r"\% ",
+            '&' => r"\& ",
+            '#' => r"\# ",
+            '{' => r"\{",
+            '}' => r"\}",
+            '\\' => r"\backslash ",
+            '~' => r"\sim ",
+            other => {
+                if let Some(greek) = mathematical_greek(other) {
+                    out.push_str(greek);
+                    out.push(' ');
+                } else if let Some((letter, bold)) = mathematical_latin(other) {
+                    if bold {
+                        out.push_str(r"\mathbf{");
+                        out.push(letter);
+                        out.push('}');
+                    } else {
+                        out.push(letter);
+                    }
+                } else if let Some(digit) = mathematical_digit(other) {
+                    out.push(digit);
+                } else if let Some(bb) = blackboard(other) {
+                    out.push_str(r"\mathbb{");
+                    out.push(bb);
+                    out.push('}');
+                } else if let Some(sc) = script_letter(other) {
+                    out.push_str(r"\mathcal{");
+                    out.push(sc);
+                    out.push('}');
+                } else if !other.is_control() && !(('\u{E000}'..='\u{F8FF}').contains(&other)) {
+                    out.push(other);
+                }
+                continue;
+            }
+        };
+        out.push_str(mapped);
+    }
+    // Command mappings carry a trailing space; joining words adds
+    // another. KaTeX ignores runs of spaces, but keep output tidy.
+    let mut tidy = String::with_capacity(out.len());
+    let mut prev_space = false;
+    for c in out.trim_end().chars() {
+        if c == ' ' {
+            if !prev_space {
+                tidy.push(c);
+            }
+            prev_space = true;
+        } else {
+            tidy.push(c);
+            prev_space = false;
+        }
+    }
+    coalesce_repeated_tex_scripts(&tidy)
+}
+
+/// Mathematical Greek ranges repeat the same 58-codepoint layout for
+/// bold, italic, bold-italic, sans-bold, and sans-bold-italic styles.
+/// Style is secondary to preserving the symbol's KaTeX identity.
+fn mathematical_greek(c: char) -> Option<&'static str> {
+    const COMMANDS: [&str; 58] = [
+        r"\Alpha",
+        r"\Beta",
+        r"\Gamma",
+        r"\Delta",
+        r"\Epsilon",
+        r"\Zeta",
+        r"\Eta",
+        r"\Theta",
+        r"\Iota",
+        r"\Kappa",
+        r"\Lambda",
+        r"\Mu",
+        r"\Nu",
+        r"\Xi",
+        r"\Omicron",
+        r"\Pi",
+        r"\Rho",
+        r"\varTheta",
+        r"\Sigma",
+        r"\Tau",
+        r"\Upsilon",
+        r"\Phi",
+        r"\Chi",
+        r"\Psi",
+        r"\Omega",
+        r"\nabla",
+        r"\alpha",
+        r"\beta",
+        r"\gamma",
+        r"\delta",
+        r"\varepsilon",
+        r"\zeta",
+        r"\eta",
+        r"\theta",
+        r"\iota",
+        r"\kappa",
+        r"\lambda",
+        r"\mu",
+        r"\nu",
+        r"\xi",
+        r"\omicron",
+        r"\pi",
+        r"\rho",
+        r"\varsigma",
+        r"\sigma",
+        r"\tau",
+        r"\upsilon",
+        r"\varphi",
+        r"\chi",
+        r"\psi",
+        r"\omega",
+        r"\partial",
+        r"\epsilon",
+        r"\vartheta",
+        r"\varkappa",
+        r"\phi",
+        r"\varrho",
+        r"\varpi",
+    ];
+    for start in [0x1D6A8, 0x1D6E2, 0x1D71C, 0x1D756, 0x1D790] {
+        let Some(offset) = (c as u32).checked_sub(start) else {
+            continue;
+        };
+        if let Some(command) = usize::try_from(offset)
+            .ok()
+            .and_then(|index| COMMANDS.get(index))
+        {
+            return Some(command);
+        }
+    }
+    None
+}
+
+fn mathematical_digit(c: char) -> Option<char> {
+    for start in [0x1D7CE, 0x1D7D8, 0x1D7E2, 0x1D7EC, 0x1D7F6] {
+        let Some(offset) = (c as u32).checked_sub(start) else {
+            continue;
+        };
+        if offset < 10 {
+            return char::from_u32('0' as u32 + offset);
+        }
+    }
+    None
+}
+
+/// Common contiguous Latin ranges in Mathematical Alphanumeric Symbols.
+/// Plain math letters are already italic in TeX; only bold needs a command.
+fn mathematical_latin(c: char) -> Option<(char, bool)> {
+    let v = c as u32;
+    let ranges = [
+        (0x1D400, true, true),   // bold uppercase
+        (0x1D41A, false, true),  // bold lowercase
+        (0x1D434, true, false),  // italic uppercase
+        (0x1D44E, false, false), // italic lowercase
+        (0x1D468, true, true),   // bold italic uppercase
+        (0x1D482, false, true),  // bold italic lowercase
+        (0x1D5A0, true, false),  // sans uppercase
+        (0x1D5BA, false, false), // sans lowercase
+        (0x1D5D4, true, true),   // sans bold uppercase
+        (0x1D5EE, false, true),  // sans bold lowercase
+    ];
+    for (start, uppercase, bold) in ranges {
+        if (start..start + 26).contains(&v) {
+            let base = if uppercase { 'A' } else { 'a' } as u32;
+            return char::from_u32(base + v - start).map(|letter| (letter, bold));
+        }
+    }
+    None
+}
+
+fn blackboard(c: char) -> Option<char> {
+    let v = c as u32;
+    (0x1D538..=0x1D551)
+        .contains(&v)
+        .then(|| char::from_u32('A' as u32 + (v - 0x1D538)))?
+}
+
+fn script_letter(c: char) -> Option<char> {
+    match c {
+        '\u{212C}' => Some('B'),
+        '\u{2130}' => Some('E'),
+        '\u{2131}' => Some('F'),
+        '\u{210B}' => Some('H'),
+        '\u{2110}' => Some('I'),
+        '\u{2112}' => Some('L'),
+        '\u{2133}' => Some('M'),
+        '\u{211B}' => Some('R'),
+        _ => {
+            let v = c as u32;
+            (0x1D49C..=0x1D4B5)
+                .contains(&v)
+                .then(|| char::from_u32('A' as u32 + (v - 0x1D49C)))?
+        }
+    }
+}
+
+/// Strip script sentinels from text destined for non-math contexts
+/// such as table cells.
+pub(crate) fn strip_script_sentinels(s: &str) -> String {
+    if !s.chars().any(super::shared::is_script_sentinel) {
+        return s.to_string();
+    }
+    strip_sentinels(s)
+}
+
+fn strip_sentinels(s: &str) -> String {
+    s.chars()
+        .filter(|c| !super::shared::is_script_sentinel(*c))
+        .collect()
+}
+
+/// Split a line into plain and math segments; math segments become
+/// `$latex$`, plain segments pass through `escape_plain`. Sentinels
+/// never survive.
+pub(crate) fn render_line_with_math(text: &str, escape_plain: impl Fn(&str) -> String) -> String {
+    if !has_strong_math(text) {
+        return escape_plain(&strip_sentinels(text));
+    }
+    let words: Vec<&str> = text.split(' ').collect();
+    #[derive(PartialEq, Clone, Copy)]
+    enum Kind {
+        Strong,
+        Weak,
+        Plain,
+    }
+    let kinds: Vec<Kind> = words
+        .iter()
+        .map(|w| {
+            if has_strong_math(w) {
+                Kind::Strong
+            } else if is_weak_math_word(w) {
+                Kind::Weak
+            } else {
+                Kind::Plain
+            }
+        })
+        .collect();
+
+    let mut out_parts: Vec<String> = Vec::new();
+    let mut i = 0usize;
+    while i < words.len() {
+        if kinds[i] == Kind::Plain {
+            out_parts.push(escape_plain(&strip_sentinels(words[i])));
+            i += 1;
+            continue;
+        }
+        // A maximal non-plain segment, leading and trailing weak words
+        // included ("0 ≤ n ≤ 2N": the 0 and the 2N belong inside).
+        let mut j = i;
+        let mut any_strong = false;
+        while j < words.len() && kinds[j] != Kind::Plain {
+            any_strong |= kinds[j] == Kind::Strong;
+            j += 1;
+        }
+        let run = words[i..j].join(" ");
+        // A single stray math character in prose (α-helix, 500 × 300)
+        // is not an equation: demand two pieces of strong evidence, or
+        // one plus script structure.
+        let strong_chars = run.chars().filter(|c| is_strong_math(*c)).count();
+        let has_scripts = run.chars().any(super::shared::is_script_sentinel);
+        if any_strong
+            && (strong_chars >= 2 || (strong_chars >= 1 && has_scripts) || has_intrinsic_math(&run))
+        {
+            out_parts.push(format!("${}$", to_latex(&run)));
+        } else {
+            for w in &words[i..j] {
+                out_parts.push(escape_plain(&strip_sentinels(w)));
+            }
+        }
+        i = j;
+    }
+    out_parts.join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ident(s: &str) -> String {
+        s.to_string()
+    }
+
+    #[test]
+    fn plain_prose_untouched() {
+        assert_eq!(
+            render_line_with_math("Just ordinary prose here.", ident),
+            "Just ordinary prose here."
+        );
+    }
+
+    #[test]
+    fn norm_inequality_becomes_latex() {
+        let line = "we have: ‖v‖\u{E002}2\u{E003} ≤ ‖v‖\u{E002}q\u{E003},";
+        let out = render_line_with_math(line, ident);
+        assert!(out.contains(r"$\|v\|_{2} \le \|v\|_{q},$"), "{out}");
+        assert!(out.starts_with("we have: "), "{out}");
+    }
+
+    #[test]
+    fn sentinels_are_stripped_from_plain_text() {
+        let line = "footnote\u{E000}1\u{E001} continues";
+        assert_eq!(render_line_with_math(line, ident), "footnote1 continues");
+    }
+
+    #[test]
+    fn greek_and_operators_map() {
+        let out = render_line_with_math("λ ∈ Ω", ident);
+        assert_eq!(out, r"$\lambda \in \Omega$");
+    }
+
+    #[test]
+    fn negation_slash_becomes_not() {
+        let out = render_line_with_math("x ̸= y ∈ Z", ident);
+        assert!(out.contains(r"\not"), "{out}");
+        assert!(out.contains(r"\in"), "{out}");
+    }
+
+    #[test]
+    fn mathematical_alphanumeric_letters_become_latex_styles() {
+        let out = render_line_with_math("𝐀 ∈ 𝑉, 𝛼 ≥ 𝟐", ident);
+        assert_eq!(out, r"$\mathbf{A} \in V, \alpha \ge 2$");
+        assert_eq!(render_line_with_math("𝑋", ident), "$X$");
+    }
+
+    #[test]
+    fn adjacent_scripts_coalesce_into_valid_tex() {
+        assert_eq!(to_latex("n\u{E000}-\u{E001} \u{E000}1\u{E001}"), "n^{- 1}");
+        assert_eq!(to_latex("x\u{E002}i\u{E003} \u{E002}j\u{E003}"), "x_{i j}");
+        assert_eq!(
+            coalesce_repeated_tex_scripts(r"\tau _{B}_{c}"),
+            r"\tau _{B c}"
+        );
+    }
+
+    #[test]
+    fn unsafe_unicode_and_literal_tex_syntax_stay_renderable() {
+        assert_eq!(to_latex("{x} \\ √"), r"\{x\} \backslash \sqrt{}");
+        assert_eq!(to_latex("f' g″"), r"f\prime g\prime \prime");
+        assert_eq!(to_latex("x\u{031F}\u{E02E}"), "x");
+        assert_eq!(to_latex("x\u{E002}\u{0304}c\u{E003}"), "x_{c}");
+    }
+
+    #[test]
+    fn accented_variables_become_latex_accents_inside_math() {
+        let out = render_line_with_math("K̃ ∩ P̃", ident);
+        assert_eq!(out, r"$\tilde{K} \cap \tilde{P}$");
+    }
+
+    #[test]
+    fn single_stray_math_char_stays_prose() {
+        assert_eq!(
+            render_line_with_math("the α-helix structure", ident),
+            "the α-helix structure"
+        );
+        assert_eq!(
+            render_line_with_math("a 500 × 300 mm panel", ident),
+            "a 500 × 300 mm panel"
+        );
+    }
+}

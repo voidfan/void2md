@@ -1,0 +1,14 @@
+测试方法
+重新构建Docker镜像并测试：
+
+docker build --no-cache -t void2md-api .
+docker run -p 3457:3457 void2md-api
+
+
+### File Upload
+
+```bash
+curl -H "Authorization: Bearer test-key" \
+     -F "file=@test.pdf;type=application/pdf" \
+     http://localhost:3457/v1/fileparse
+```

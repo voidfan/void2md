@@ -3,8 +3,8 @@ package service
 import (
 	"sync"
 
-	"void2md-api/internal/chunk"
-	"void2md-api/internal/config"
+	"void2md/internal/chunk"
+	"void2md/internal/config"
 )
 
 // ChunkResponse chunk 响应

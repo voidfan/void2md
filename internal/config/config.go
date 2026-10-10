@@ -4,37 +4,52 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 )
 
-// ChunkingConfig Markdown 分块模块配置
-type ChunkingConfig struct {
-	TokenizerPath string
-	ChunkSizes    map[string]int
-	Separator     string
-	MinChunkRatio float64
-	MaxChunkRatio float64
+// Config 全局应用配置
+type Config struct {
+	Host      string `json:"host"`
+	Port      int    `json:"port"`
+	LogLevel  string `json:"logLevel"`
+	LogFormat string `json:"logFormat"`
+
+	HTMLCrawlConfig HTMLCrawlConfig `json:"htmlCrawlConfig"`
 }
 
-// GetChunkingConfig returns the chunking configuration with defaults matching file-parse service
-func GetChunkingConfig() ChunkingConfig {
-	// Match file-parse service default exactly: /app/data/qwen3-embedding-tokenizer/tokenizer.json
-	defaultTokenizerPath := "/app/data/qwen3-embedding-tokenizer/tokenizer.json"
+var (
+	cfg  *Config
+	once sync.Once
+)
 
-	return ChunkingConfig{
-		TokenizerPath: getEnv("VOID2MD_CHUNKING_TOKENIZER_PATH", defaultTokenizerPath),
-		ChunkSizes: map[string]int{
-			"text":   getEnvInt("VOID2MD_CHUNKING_TEXT_SIZE", 768),
-			"figure": getEnvInt("VOID2MD_CHUNKING_FIGURE_SIZE", 768),
-			"code":   getEnvInt("VOID2MD_CHUNKING_CODE_SIZE", 1536),
-			"table":  getEnvInt("VOID2MD_CHUNKING_TABLE_SIZE", 1536),
-		},
-		Separator:     getEnv("VOID2MD_CHUNKING_SEPARATOR", "\n\n\n\n\n"),
-		MinChunkRatio: getEnvFloat64("VOID2MD_CHUNKING_MIN_RATIO", 0.15),
-		MaxChunkRatio: getEnvFloat64("VOID2MD_CHUNKING_MAX_RATIO", 1.5),
-	}
+// LoadConfig 加载配置，使用 sync.Once 保证单例模式
+func LoadConfig() *Config {
+	once.Do(func() {
+		cfg = &Config{}
+		cfg.loadFromEnv()
+	})
+	return cfg
 }
 
-// Helper functions for environment variable parsing
+func (c *Config) loadFromEnv() {
+	c.Host = getEnv("VOID2MD_HOST", "0.0.0.0")
+	c.Port = getEnvInt("VOID2MD_PORT", 3457)
+	c.LogLevel = getEnv("VOID2MD_LOG_LEVEL", "INFO")
+	c.LogFormat = getEnv("VOID2MD_LOG_FORMAT", "plain")
+
+	c.HTMLCrawlConfig = HTMLCrawlConfig{
+		Concurrency:    getEnvInt("VOID2MD_HTML_CRAWL_CONCURRENCY", htmlDef.Concurrency),
+		MaxPages:       getEnvInt("VOID2MD_HTML_MAX_PAGES", htmlDef.MaxPages),
+		HardMaxPages:   getEnvInt("VOID2MD_HTML_HARD_MAX_PAGES", htmlDef.HardMaxPages),
+		PageTimeout:    getEnvInt("VOID2MD_HTML_PAGE_TIMEOUT", htmlDef.PageTimeout),
+		TaskTimeout:    getEnvInt("VOID2MD_HTML_TASK_TIMEOUT", htmlDef.TaskTimeout),
+		MaxHTMLSizeMB:  getEnvInt("VOID2MD_HTML_MAX_HTML_SIZE_MB", htmlDef.MaxHTMLSizeMB),
+		MaxTaskBytesMB: getEnvInt("VOID2MD_HTML_MAX_TASK_BYTES_MB", htmlDef.MaxTaskBytesMB),
+		UserAgent:      getEnv("VOID2MD_HTML_USER_AGENT", htmlDef.UserAgent),
+		TaskTTLSeconds: getEnvInt("VOID2MD_HTML_TASK_TTL_SECONDS", htmlDef.TaskTTLSeconds),
+		MaxTasks:       getEnvInt("VOID2MD_HTML_MAX_TASKS", htmlDef.MaxTasks),
+	}.Normalize()
+}
 
 func getEnv(key, defaultVal string) string {
 	if v := os.Getenv(key); v != "" {

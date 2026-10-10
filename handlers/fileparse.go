@@ -11,8 +11,9 @@ import (
 	"strconv"
 	"strings"
 
+	"void2md/rust"
+
 	"github.com/gin-gonic/gin"
-	"void2md-api/rust"
 )
 
 // getMaxUploadSize returns the maximum upload size in bytes (default 32MB for fileparse)
@@ -209,7 +210,7 @@ func getBoolParam(c *gin.Context, paramName string, defaultValue bool) bool {
 		}
 		return defaultValue
 	}
-}// getDefaultValue returns the default value for a given parameter (matching file-parse)
+} // getDefaultValue returns the default value for a given parameter (matching file-parse)
 func getDefaultValue(paramName string) bool {
 	switch paramName {
 	case "keep_header_footer":

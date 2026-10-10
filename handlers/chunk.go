@@ -6,8 +6,9 @@ import (
 	"os"
 	"strconv"
 
+	"void2md/internal/service"
+
 	"github.com/gin-gonic/gin"
-	"void2md-api/internal/service"
 )
 
 // getMaxUploadSize returns the maximum upload size in bytes (default 100MB)

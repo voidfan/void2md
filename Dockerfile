@@ -20,7 +20,7 @@ RUN cd rust && \
     cargo build --release
 
 # Stage 2: Build Go application with vendored dependencies
-FROM golang:1.22 AS go-builder
+FROM golang:1.26 AS go-builder
 
 # Install CGO dependencies
 RUN apt-get update && apt-get install -y \

@@ -34,8 +34,8 @@ Wikipedia - Wikipedia pages
 ### Docker Build and run
 
 ```bash
-docker build -t void2md-api .
-docker run -p 3457:3457 void2md-api
+docker build -t void2md .
+docker run -p 3457:3457 void2md
 ```
 
 ## API Usage

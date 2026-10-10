@@ -1,8 +1,8 @@
 测试方法
 重新构建Docker镜像并测试：
 
-docker build --no-cache -t void2md-api .
-docker run -p 3457:3457 void2md-api
+docker build --no-cache -t void2md .
+docker run -p 3457:3457 void2md
 
 
 ### File Upload
@@ -11,4 +11,87 @@ docker run -p 3457:3457 void2md-api
 curl -H "Authorization: Bearer test-key" \
      -F "file=@test.pdf;type=application/pdf" \
      http://localhost:3457/v1/fileparse
+```
+
+### Web Crawl
+```bash
+curl -sS -X POST http://localhost:3457/v1/htmlparse     -H 'Authorization: Bearer test-key'     -H 'Content-Type: application/json'     -d '{"url":"https://support.sangfor.com.cn/productSoftware/list?product_id=220&category_id=226","sele  ctor":".docs-content","maxPage":200}'
+
+curl -sS -X GET http://localhost:3457/v1/htmlparse/hpa_818b9af9e41dab6f    -H 'Authorization: Bearer test-key'     -H 'Content-Type: application/json'
+
+返回数据结构
+
+{
+  "status": "pending|running|success|failed|cancelled",
+  "pages": 0,
+  "markdown": "",
+  "items": [],
+  "truncated": false,
+  "error": ""
+}
+字段说明
+status (string): 任务状态
+
+pending - 任务已提交，等待处理
+running - 任务正在执行中
+success - 任务成功完成
+failed - 任务执行失败
+cancelled - 任务已被取消
+pages (integer): 已处理的页面数量
+
+markdown (string): 所有页面聚合后的完整 Markdown 内容
+
+items (array): 每个页面的详细结果数组，每个 item 包含：
+
+
+{
+  "url": "页面URL",
+  "title": "页面标题", 
+  "markdown": "该页面的Markdown内容"
+}
+truncated (boolean): 结果是否被截断（由于达到大小或页面限制）
+
+error (string): 如果任务失败，这里会包含错误信息
+
+示例响应
+成功完成的任务：
+
+
+{
+  "status": "success",
+  "pages": 1,
+  "markdown": "# 页面标题\n\n页面内容...",
+  "items": [
+    {
+      "url": "https://example.com",
+      "title": "页面标题",
+      "markdown": "# 页面标题\n\n页面内容..."
+    }
+  ],
+  "truncated": false,
+  "error": ""
+}
+失败的任务：
+
+
+{
+  "status": "failed",
+  "pages": 0,
+  "markdown": "",
+  "items": [],
+  "truncated": false,
+  "error": "entry page https://example.com failed: request failed: Get \"https://example.com\": dial tcp: i/o timeout"
+}
+进行中的任务：
+
+
+{
+  "status": "running",
+  "pages": 3,
+  "markdown": "",
+  "items": [],
+  "truncated": false,
+  "error": ""
+}
+
 ```

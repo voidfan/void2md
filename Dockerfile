@@ -12,15 +12,15 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Copy Rust source and data directory
-COPY rust/ ./rust/
-COPY data/ ./data/
+COPY file/rust/ ./rust/
+COPY file/data/ ./data/
 
 # Build Rust library as shared library
 RUN cd rust && \
     cargo build --release
 
 # Stage 2: Build Go application with vendored dependencies
-FROM golang:1.26 AS go-builder
+FROM golang:1.26.10 AS go-builder
 
 # Install CGO dependencies
 RUN apt-get update && apt-get install -y \
@@ -73,6 +73,10 @@ RUN apt-get update && apt-get install -y \
 # Copy shared library and data directory to /app (matching file-parse service structure)
 COPY --from=rust-builder /app/rust/target/release/libvoid2md.so /usr/lib/libvoid2md.so
 COPY --from=rust-builder /app/data/ /app/data/
+
+# Copy dbc config files (dbc API is mounted under /dbc, config path via DBC_CONFIG)
+COPY dbc/config/ /app/dbc/config/
+ENV DBC_CONFIG=/app/dbc/config/config.json
 
 # Copy Go binary
 COPY --from=go-builder /app/void2md-api /app/void2md-api

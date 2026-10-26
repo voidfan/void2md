@@ -1,0 +1,69 @@
+[
+  {
+    "id": "revenue_gross",
+    "name": "Gross Revenue",
+    "description": "Total revenue before expenses and taxes",
+    "domain": "sales",
+    "related_tables": ["sales", "orders", "transactions"],
+    "related_columns": {
+      "sales": ["amount", "total_revenue"],
+      "orders": ["order_value", "total_amount"],
+      "transactions": ["transaction_amount"]
+    },
+    "synonyms": ["revenue", "sales", "income", "gross sales", "total sales"],
+    "metric_type": "sum"
+  },
+  {
+    "id": "order_count",
+    "name": "Order Count",
+    "description": "Number of orders placed",
+    "domain": "sales",
+    "related_tables": ["orders", "sales"],
+    "related_columns": {
+      "orders": ["order_id"],
+      "sales": ["sale_id"]
+    },
+    "synonyms": ["orders", "number of orders", "order volume", "sales count"],
+    "metric_type": "count"
+  },
+  {
+    "id": "customer_count",
+    "name": "Customer Count",
+    "description": "Number of unique customers",
+    "domain": "sales",
+    "related_tables": ["customers", "orders"],
+    "related_columns": {
+      "customers": ["customer_id"],
+      "orders": ["customer_id"]
+    },
+    "synonyms": ["customers", "number of customers", "customer base", "user count"],
+    "metric_type": "count"
+  },
+  {
+    "id": "issue_count",
+    "name": "Issue Count",
+    "description": "Number of issues/tickets in the system",
+    "domain": "support",
+    "related_tables": ["jiraissue", "issues", "tickets"],
+    "related_columns": {
+      "jiraissue": ["id", "issuekey"],
+      "issues": ["id", "ticket_id"],
+      "tickets": ["id", "ticket_number"]
+    },
+    "synonyms": ["issues", "tickets", "problems", "bugs", "defects", "tasks"],
+    "metric_type": "count"
+  },
+  {
+    "id": "resolution_time",
+    "name": "Resolution Time",
+    "description": "Average time to resolve issues",
+    "domain": "support",
+    "related_tables": ["jiraissue", "issues"],
+    "related_columns": {
+      "jiraissue": ["created", "updated", "resolutiondate"],
+      "issues": ["created_date", "resolved_date"]
+    },
+    "synonyms": ["time to resolve", "resolution duration", "fix time", "handle time"],
+    "metric_type": "average"
+  }
+]

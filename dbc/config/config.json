@@ -1,0 +1,43 @@
+{
+  "llm": {
+    "endpoint": "https://api.openai.com/v1",
+    "model": "gpt-4",
+    "api_key": "your-openai-api-key-here"
+  },
+  "dbx": {
+    "mcp_url": "http://localhost:4225/mcp",
+    "mcp_token": "my-secure-mcp-token-2026",
+    "connection_id": "jira-mysql"
+  },
+  "database": {
+    "type": "mysql",
+    "host": "localhost",
+    "port": "3306",
+    "username": "jirauser",
+    "password": "JiraPass@2026",
+    "database": "jiradb",
+    "version": "8.0"
+  },
+  "security": {
+    "allowed_operations": ["select", "insert", "update", "delete"],
+    "max_rows": 1000,
+    "query_timeout_seconds": 30
+  },
+  "agentic_workflow": {
+    "enabled": true,
+    "semantic_layer": {
+      "enabled": true,
+      "file_path": "dbc/config/semantic_layer.json"
+    },
+    "clarification": {
+      "enabled": true,
+      "max_questions": 3,
+      "confidence_threshold": 0.7
+    },
+    "vector_search": {
+      "enabled": false,
+      "model": "all-MiniLM-L6-v2",
+      "dimensions": 384
+    }
+  }
+}

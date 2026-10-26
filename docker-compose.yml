@@ -1,0 +1,27 @@
+services:
+  void2md:
+    image: void2md/void2md:latest
+    build:
+      context: .
+    network_mode: host
+    volumes:
+      # 覆盖容器内 dbc 配置（与 Dockerfile 的 DBC_CONFIG 路径一致）
+      - ./dbc/config/config.json:/app/dbc/config/config.json:ro
+    restart: unless-stopped
+
+  dbx:
+    image: t8y2/dbx:latest
+    network_mode: host
+    volumes:
+      - dbx-data:/app/data
+    environment:
+      # Disable password for development (remove in production)
+      - DBX_DISABLE_PASSWORD=1
+      # Enable MCP HTTP endpoint with fixed secure token
+      - DBX_WEB_MCP_TOKEN=my-secure-mcp-token-2026
+      # Allow localhost access to MCP endpoint
+      - DBX_WEB_MCP_ALLOWED_HOSTS=localhost:4225,host.docker.internal:4225
+    restart: unless-stopped
+
+volumes:
+  dbx-data:

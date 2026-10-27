@@ -11,7 +11,7 @@ import (
 	"golang.org/x/net/publicsuffix"
 )
 
-// staticAssetExts 静态资源后缀，命中则不入队（内容不是网页正文）。
+// staticAssetExts are path extensions skipped (not page content).
 var staticAssetExts = map[string]bool{
 	".png": true, ".jpg": true, ".jpeg": true, ".gif": true, ".svg": true,
 	".webp": true, ".bmp": true, ".ico": true, ".css": true, ".js": true,
@@ -22,8 +22,9 @@ var staticAssetExts = map[string]bool{
 	".atom": true, ".json": true, ".dmg": true, ".exe": true, ".apk": true,
 }
 
-// NormalizeURL 规范化 URL：scheme 仅允许 http/https、host 转小写、
-// 去掉默认端口与 fragment。非法输入返回 error（POST 阶段据此回 400）。
+// NormalizeURL normalizes a URL: http/https only, lowercase host,
+// strip default port and fragment. Invalid input returns an error
+// (used by the POST stage to reply 400).
 func NormalizeURL(raw string) (*url.URL, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -51,15 +52,17 @@ func NormalizeURL(raw string) (*url.URL, error) {
 	return u, nil
 }
 
-// SameHost 判断两个 URL 是否同站：基准为 eTLD+1（设计 §3.3），
-// doc.example.com 与 api.example.com 判为同站；IP 字面量或无法解析的 host
-// 退化为 host 全等比较；端口不参与比较。
+// SameHost reports whether two URLs are on the same site, keyed on eTLD+1
+// (design §3.3): doc.example.com and api.example.com are the same site.
+// IP literals or unresolvable hosts fall back to full host equality;
+// ports are ignored.
 func SameHost(a, b *url.URL) bool {
 	ra, rb := registrableDomain(a.Host), registrableDomain(b.Host)
 	return ra != "" && ra == rb
 }
 
-// registrableDomain 返回 host 的 eTLD+1；无法解析时退化为去端口的 host 本身。
+// registrableDomain returns the eTLD+1 of host; falls back to the
+// port-stripped host when it cannot be resolved.
 func registrableDomain(host string) string {
 	h := stripPort(strings.ToLower(host))
 	if h == "" || net.ParseIP(h) != nil {
@@ -72,7 +75,7 @@ func registrableDomain(host string) string {
 	return d
 }
 
-// stripPort 去掉 host 中的端口，正确处理 IPv6 字面量（[::1]:8080）。
+// stripPort removes the port from host, handling IPv6 literals ([::1]:8080).
 func stripPort(host string) string {
 	if strings.HasPrefix(host, "[") {
 		if i := strings.Index(host, "]"); i >= 0 {
@@ -86,7 +89,7 @@ func stripPort(host string) string {
 	return host
 }
 
-// IsStaticAsset 判断路径是否指向静态资源。
+// IsStaticAsset reports whether the path points at a static asset.
 func IsStaticAsset(p string) bool {
 	ext := strings.ToLower(path.Ext(p))
 	if ext == "" {
@@ -95,9 +98,10 @@ func IsStaticAsset(p string) bool {
 	return staticAssetExts[ext]
 }
 
-// ExtractLinks 从**整个文档**提取规范化后的绝对链接（设计 §4.2 第 10 步：
-// 必须从整个文档取，否则导航栏中的分页链接无法被发现）。
-// 跳过 fragment-only / mailto / 非 http(s) / 静态资源 / 重复项。
+// ExtractLinks extracts normalized absolute links from the **whole document**
+// (design §4.2 step 10: must be the whole document, otherwise pagination
+// links in nav bars are never discovered). Skips fragment-only / mailto /
+// non-http(s) / static assets / duplicates.
 func ExtractLinks(doc *html.Node, base *url.URL) []string {
 	var out []string
 	seen := make(map[string]bool)
@@ -119,7 +123,8 @@ func ExtractLinks(doc *html.Node, base *url.URL) []string {
 	return out
 }
 
-// resolveLink 把 href 解析为相对 base 的规范化绝对 URL；不可用则返回 false。
+// resolveLink resolves href against base into a normalized absolute URL;
+// returns false when unusable.
 func resolveLink(base *url.URL, href string) (string, bool) {
 	href = strings.TrimSpace(href)
 	if href == "" || strings.HasPrefix(href, "#") {
@@ -130,7 +135,7 @@ func resolveLink(base *url.URL, href string) (string, bool) {
 		return "", false
 	}
 	if ref.Scheme != "" && ref.Scheme != "http" && ref.Scheme != "https" {
-		return "", false // mailto: / javascript: / tel: 等
+		return "", false // mailto: / javascript: / tel: etc.
 	}
 	abs := base.ResolveReference(ref)
 	if IsStaticAsset(abs.Path) {
@@ -143,9 +148,10 @@ func resolveLink(base *url.URL, href string) (string, bool) {
 	return u.String(), true
 }
 
-// ShouldEnqueue 判断一个已规范化的绝对链接是否应进入抓取 frontier。
-// 这是设计 §4.2 第 11 步「入队过滤」的唯一实现点：未 visited + 可解析 + 同域。
-// **必须由 Crawl 的 BFS 调用**，否则爬虫会跟随页面上所有外链（等于爬全网）。
+// ShouldEnqueue decides whether a normalized absolute link enters the crawl
+// frontier. This is the single implementation point of design §4.2 step 11
+// (enqueue filter): not visited + parseable + same domain. **Must be called
+// from Crawl's BFS**, otherwise the crawler follows every external link.
 func ShouldEnqueue(link string, entry *url.URL, visited map[string]bool) bool {
 	if visited[link] {
 		return false
@@ -157,7 +163,7 @@ func ShouldEnqueue(link string, entry *url.URL, visited map[string]bool) bool {
 	return SameHost(entry, u)
 }
 
-// getAttr 读取节点属性值。
+// getAttr reads a node attribute value.
 func getAttr(n *html.Node, key string) string {
 	for _, a := range n.Attr {
 		if a.Key == key {

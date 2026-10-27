@@ -13,11 +13,11 @@ import (
 	"void2md/common/diagnosis"
 )
 
-// newTestCrawlService 构造测试用抓取服务。
+// newTestCrawlService builds a crawl service for tests.
 //
-// 原计划签名是 newTestCrawlService(t, srv)，但 srv 参数**完全未被使用**
-// （t 也只用于 t.Helper()）：留着它会让读代码的人以为「服务端不可达」这类
-// 失败被这个参数管住了，实际测试根本不受它影响。已删掉该参数并同步改所有调用点。
+// The originally planned srv parameter was completely unused (t only fed t.Helper()),
+// misleadingly implying it governed "server unreachable" failures; it was removed
+// along with all call sites.
 func newTestCrawlService(t *testing.T) *HTMLCrawlService {
 	t.Helper()
 	cfg := testCrawlCfg()
@@ -26,7 +26,7 @@ func newTestCrawlService(t *testing.T) *HTMLCrawlService {
 	return NewHTMLCrawlService(cfg)
 }
 
-// waitTerminal 轮询直到任务进入终态。
+// waitTerminal polls until the task reaches a terminal state.
 func waitTerminal(t *testing.T, svc *HTMLCrawlService, id string) HTMLCrawlTask {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
@@ -65,8 +65,8 @@ func TestService_SubmitCrawlSuccess(t *testing.T) {
 	if deduped {
 		t.Error("first submit must not be deduped")
 	}
-	// 设计 §2.1 承诺的 ID 形态：hpa_ 前缀。
-	// 少了这条，把 newTaskID 的前缀改成 zzz_ 是全绿的。
+	// ID shape promised by design §2.1: hpa_ prefix.
+	// Without this, changing newTaskID's prefix to zzz_ stays green.
 	if !strings.HasPrefix(id, "hpa_") {
 		t.Errorf("taskId = %q, want hpa_ prefix", id)
 	}
@@ -84,17 +84,17 @@ func TestService_SubmitCrawlSuccess(t *testing.T) {
 	if task.Error != "" || task.Truncated {
 		t.Errorf("Error=%q Truncated=%v, want empty/false", task.Error, task.Truncated)
 	}
-	// markdown 必须带来源注释，供下游溯源
+	// markdown must carry the source comment for downstream provenance
 	if !strings.Contains(task.Markdown, "<!-- source: "+srv.URL+"/ -->") {
 		t.Errorf("markdown missing source comment, got %q", task.Markdown)
 	}
 }
 
-// TestService_InvalidURL 覆盖 URL 层面的坏输入。
+// TestService_InvalidURL covers bad URL-level input.
 //
-// 除了「必须报错」，还断言错误的形状：必须是携带 FF0003 的 DiagnosisException
-// （设计 §5：缺 url / scheme 非 http(s) → 400 + FF0003）。只判 err != nil 的话，
-// 把诊断码换成任意别的码（甚至换成一个裸 error）仍然是绿的。
+// Beyond "must error", asserts the error shape: a DiagnosisException carrying FF0003
+// (design §5: missing url / non-http(s) scheme → 400 + FF0003). An err != nil check alone
+// would stay green if the diagnosis code were swapped for another (or a bare error).
 func TestService_InvalidURL(t *testing.T) {
 	svc := NewHTMLCrawlService(testCrawlCfg())
 	for _, bad := range []string{"", "ftp://a.com", "not a url at all", "/relative/path"} {
@@ -117,21 +117,22 @@ func TestService_InvalidURL(t *testing.T) {
 	}
 }
 
-// TestService_MaxPageNonPositive 覆盖设计 §2.1「maxPage ≤ 0 → 400 + FF0003」。
+// TestService_MaxPageNonPositive covers design §2.1: maxPage ≤ 0 → 400 + FF0003.
 //
-// TestService_InvalidURL 只喂 URL 层面的坏输入，从不传 maxPage，于是服务层
-// `if *maxPage <= 0 { return … }` 这一整段是零覆盖的：把整段删掉，pages=0 会被
-// crawler.Crawl 兜底成 1（见 internal/crawler/crawler.go 的「参数兜底」），
-// 任务正常成功，接口契约（非正数必须 400）被破坏而测试全绿。
+// TestService_InvalidURL never passes maxPage, so the service-level
+// `if *maxPage <= 0 { return … }` block had zero coverage: deleting it would let pages=0
+// fall back to 1 inside crawler.Crawl (see its param fallback), the task would succeed,
+// and the API contract (non-positive must 400) would break with all tests green.
 //
-// URL 用 127.0.0.1:1（保留端口，连接必然被拒）而非真实域名：万一实现没拦住、
-// 落到 `go s.run`，只会本地快速失败，不会真的去出网。
+// Uses 127.0.0.1:1 (reserved port, connection always refused) instead of a real domain:
+// if the implementation failed to block and reached `go s.run`, it would only fail fast
+// locally without real network traffic.
 func TestService_MaxPageNonPositive(t *testing.T) {
 	svc := NewHTMLCrawlService(testCrawlCfg())
 	for _, bad := range []int{0, -1, -100} {
 		_, deduped, err := svc.Submit("http://127.0.0.1:1/", "", &bad)
 		if err == nil {
-			t.Errorf("Submit(maxPage=%d) expected error, got nil（非正 maxPage 必须 400）", bad)
+			t.Errorf("Submit(maxPage=%d) expected error, got nil (non-positive maxPage must 400)", bad)
 			continue
 		}
 		var de *diagnosis.DiagnosisException
@@ -147,23 +148,25 @@ func TestService_MaxPageNonPositive(t *testing.T) {
 			t.Errorf("Submit(maxPage=%d) status = %d, want 400", bad, de.StatusCode)
 		}
 		if deduped {
-			t.Errorf("Submit(maxPage=%d) deduped = true, want false（被拒的提交不得命中任务表）", bad)
+			t.Errorf("Submit(maxPage=%d) deduped = true, want false (rejected submits must not hit the task store)", bad)
 		}
 	}
 }
 
-// TestService_DedupAliveTask 覆盖设计 §2.1「同一规范化 url 已有存活任务（pending /
-// running）→ 直接返回已有 taskId」。
+// TestService_DedupAliveTask covers design §2.1: an alive task (pending/running) for the
+// same normalized URL → return the existing taskId directly.
 //
-// 站点必须**阻塞**：站点若即时返回，第一个任务可能在第二次 Submit 之前就跑完并翻终态，
-// 那时 byURL 已清空、去重本就不该触发，用例会变成随机失败。
+// The site must block: if it responded instantly, the first task could finish before the
+// second Submit, byURL would already be cleared, dedupe legitimately wouldn't trigger,
+// and the test would flake.
 //
-// 三重断言，缺一不可：
-//   - deduped == true：直接删掉 `if deduped { return id, true, nil }` 时，
-//     store 仍返回同一个 id、错误仍为 nil，只有这个返回值会变；
-//   - id 相同：去重必须复用已有任务；
-//   - 站点**没有出现第二个爬取请求**：这是「去重真的省掉了重复出网/重复内存」的
-//     正向证据——没有它，一个「返回 true 但照样再起一个 goroutine」的实现是绿的。
+// Three assertions, none optional:
+//   - deduped == true: deleting `if deduped { return id, true, nil }` leaves the store
+//     returning the same id and nil error — only this return value changes;
+//   - same id: dedupe must reuse the existing task;
+//   - the site sees no second crawl request: positive evidence that dedupe actually saves
+//     duplicate network/memory — without it, an implementation that "returns true but still
+//     spawns a goroutine" would pass.
 func TestService_DedupAliveTask(t *testing.T) {
 	release := make(chan struct{})
 	var releaseOnce sync.Once
@@ -175,12 +178,12 @@ func TestService_DedupAliveTask(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&hits, 1)
 		entered <- struct{}{}
-		<-release // 卡住请求，保证首个任务在第二次 Submit 时仍然存活
+		<-release // hold the request so the first task is still alive at the second Submit
 		w.Header().Set("Content-Type", "text/html")
 		_, _ = w.Write([]byte(`<html><body><p>正文</p></body></html>`))
 	}))
-	// defer 后进先出：兜底放行必须早于 srv.Close() 执行，否则用例中途 Fatal 时
-	// handler 还阻塞在 release 上，srv.Close() 会一直等它。
+	// defers run LIFO: the fallback release must run before srv.Close(), else a mid-test
+	// Fatal leaves the handler blocked on release and srv.Close() waits forever.
 	defer srv.Close()
 	defer doRelease()
 
@@ -197,7 +200,8 @@ func TestService_DedupAliveTask(t *testing.T) {
 		t.Error("first submit must not be deduped")
 	}
 
-	// 等入口请求真的到达站点，此时首个任务必然存活（阻塞在 handler 里）
+	// wait until the entry request actually reaches the site; the first task is then
+	// necessarily alive (blocked in the handler)
 	select {
 	case <-entered:
 	case <-time.After(5 * time.Second):
@@ -209,17 +213,18 @@ func TestService_DedupAliveTask(t *testing.T) {
 		t.Fatalf("second Submit error: %v", err)
 	}
 	if !deduped2 {
-		t.Error("deduped = false, want true：同一 URL 已有存活任务时必须复用")
+		t.Error("deduped = false, want true: must reuse the alive task for the same URL")
 	}
 	if id2 != id1 {
-		t.Errorf("taskId = %q, want %q（去重必须复用已有任务）", id2, id1)
+		t.Errorf("taskId = %q, want %q (dedupe must reuse the existing task)", id2, id1)
 	}
 
-	// 去重必须真的省掉第二次爬取：站点上不应再出现请求。
-	// （若实现只改了返回值而照样 `go s.run`，第二个 goroutine 会立刻发出请求。）
+	// Dedupe must actually skip the second crawl: no further request may hit the site.
+	// (An implementation that only changed the return value but still ran `go s.run`
+	// would issue the request immediately.)
 	select {
 	case <-entered:
-		t.Error("second crawl issued a request: 去重后仍起了新的爬取 goroutine")
+		t.Error("second crawl issued a request: a new crawl goroutine started despite dedupe")
 	case <-time.After(2 * time.Second):
 	}
 
@@ -233,16 +238,16 @@ func TestService_DedupAliveTask(t *testing.T) {
 		t.Errorf("Pages = %d, want 1", task.Pages)
 	}
 	if got := atomic.LoadInt32(&hits); got != 1 {
-		t.Errorf("server hits = %d, want 1（去重后只应有一次入口请求）", got)
+		t.Errorf("server hits = %d, want 1 (only one entry request after dedupe)", got)
 	}
 }
 
-// TestService_MaxPageClamped 覆盖设计 §2.1：超过硬上限按 clamp 处理，不报错，
-// 且**钳制必须真的生效**。
+// TestService_MaxPageClamped covers design §2.1: above the hard limit, clamp without
+// erroring — and the clamp must actually take effect.
 //
-// 只断言「不报错」是空转的：把 clamp 整段删掉，Submit 照样不报错，断言照样通过。
-// 要观测钳制，站点必须比硬上限**更多页**——单页站点无论钳不钳制都只抓到 1 页，
-// 断言不出任何区别。这里 5 页（入口 + 4 个子页）对 HardMaxPages=3。
+// Asserting only "no error" is vacuous: deleting the whole clamp still passes. To observe
+// clamping, the site must have more pages than the hard limit — a single-page site yields
+// 1 page either way. Here: 5 pages (entry + 4 subpages) vs HardMaxPages=3.
 func TestService_MaxPageClamped(t *testing.T) {
 	cfg := testCrawlCfg()
 	cfg.HardMaxPages = 3
@@ -270,13 +275,14 @@ func TestService_MaxPageClamped(t *testing.T) {
 	if task.Status != CrawlSuccess {
 		t.Fatalf("status = %v, want success (error=%q)", task.Status, task.Error)
 	}
-	// Crawl 在批处理前把本批截断到剩余预算，故恰好产出 MaxPage 页。
+	// Crawl truncates the batch to the remaining budget before processing, so exactly
+	// MaxPage pages come out.
 	if task.Pages != cfg.HardMaxPages {
-		t.Errorf("pages = %d, want %d：maxPage=10000 必须被钳到硬上限（若站点只有 %d 页，本用例观测不到钳制）",
+		t.Errorf("pages = %d, want %d: maxPage=10000 must be clamped to the hard limit (a site with only %d pages couldn't observe clamping)",
 			task.Pages, cfg.HardMaxPages, cfg.HardMaxPages)
 	}
 	if !task.Truncated {
-		t.Error("truncated = false, want true：被页数上限截断的任务必须置 truncated")
+		t.Error("truncated = false, want true: a task cut off by the page limit must set truncated")
 	}
 }
 
@@ -288,7 +294,7 @@ func TestService_CancelDiscardsPages(t *testing.T) {
 			_, _ = w.Write([]byte(`<html><body><a href="/slow">s</a><p>首页</p></body></html>`))
 			return
 		}
-		<-release // 卡住子页，制造可取消窗口
+		<-release // hold the subpage to create a cancellable window
 		_, _ = w.Write([]byte(`<html><body><p>慢页</p></body></html>`))
 	}))
 	defer srv.Close()
@@ -300,15 +306,17 @@ func TestService_CancelDiscardsPages(t *testing.T) {
 		t.Fatalf("Submit error: %v", err)
 	}
 
-	// 等入口页抓完（pages 出现进度）再取消。两个要点：
+	// Wait for the entry page to be fetched (progress appears) before cancelling. Two points:
 	//
-	//  1. 观测条件必须是「pages >= 1 **且状态仍是 running**」。只判 pages >= 1
-	//     不够：终态转移（finishSuccess）也会写 pages，于是 setProgress 完全没接线时，
-	//     该条件会在 TaskTimeout(5s) 到点、任务翻 success 的瞬间被满足，用例照样往下走，
-	//     「进度回路坏了」只能靠后面 Status=success 偶然撞到。
-	//  2. deadline 必须**明显大于** TaskTimeout。原计划两者都是 5s，Cancel 恰好落在
-	//     任务翻终态的瞬间：某些时序下 Cancel 打在已终态任务上（幂等 no-op），
-	//     于是「取消语义」这条用例本身变成了计时赛跑。
+	//  1. The observed condition must be "pages >= 1 AND status still running". pages >= 1
+	//     alone isn't enough: the terminal transition (finishSuccess) also writes pages, so
+	//     with setProgress entirely unwired, the condition would be met the moment
+	//     TaskTimeout(5s) flips the task to success, the test would proceed, and a broken
+	//     progress loop would only be caught accidentally by the later Status check.
+	//  2. The deadline must be clearly larger than TaskTimeout. Both were originally 5s, so
+	//     Cancel could land exactly as the task turned terminal: in some timings Cancel hits
+	//     an already-terminal task (idempotent no-op), turning this cancel-semantics test
+	//     into a timing race.
 	deadline := time.Now().Add(60 * time.Second)
 	var lastPages int
 	var lastStatus HTMLCrawlStatus
@@ -324,7 +332,7 @@ func TestService_CancelDiscardsPages(t *testing.T) {
 			break
 		}
 		if task.Status != CrawlPending && task.Status != CrawlRunning {
-			break // 已翻终态，却从未在 running 期间见过进度信号
+			break // turned terminal without ever showing a progress signal while running
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -340,24 +348,25 @@ func TestService_CancelDiscardsPages(t *testing.T) {
 	if task.Status != CrawlCancelled {
 		t.Fatalf("Status = %q, want cancelled", task.Status)
 	}
-	// 取消语义：已抓页面必须被丢弃
+	// cancel semantics: fetched pages must be discarded
 	if task.Pages != 0 || task.Markdown != "" || len(task.Items) != 0 {
 		t.Errorf("cancelled task must discard payload: %+v", task)
 	}
 }
 
-// TestService_CancelAbortsInFlightRequest 设计 §2.3：pending/running 任务的 DELETE
-// 必须真的取消任务级 ctx。
+// TestService_CancelAbortsInFlightRequest: design §2.3 — DELETE on a pending/running task
+// must really cancel the task-level ctx.
 //
-// 只断言「状态变 cancelled、载荷被清空」是空转的：把 run 里的
-// `s.store.setCancel(taskID, cancel)` 删掉后，store.cancel() 照样把状态置 cancelled、
-// 把载荷清空（它是同步完成的），而 ctx 从不被取消——抓取 goroutine 继续跑到
-// TaskTimeout（默认 300s），期间持续出网、持续往内存里堆 Markdown 再丢弃，
-// 客户端拿到的仍是 204，看不出任何异常。
+// Asserting only "status becomes cancelled, payload cleared" is vacuous: with run's
+// `s.store.setCancel(taskID, cancel)` deleted, store.cancel() still sets cancelled and
+// clears the payload synchronously, while the ctx is never cancelled — the crawl goroutine
+// keeps running to TaskTimeout (default 300s), fetching and discarding Markdown, and the
+// client still sees 204.
 //
-// 这条用例观测的唯一东西就是「在飞请求被真的掐断」：爬取方的 HTTP 请求在 ctx 取消后
-// 会断开连接，服务端据此看到 r.Context().Done()。TaskTimeout/PageTimeout 都放到 30s，
-// 所以这里若没断，5s 的窗口内绝无可能由超时自然产生。
+// The only thing this test observes is the in-flight request actually being cut: after ctx
+// cancel the crawler's HTTP request disconnects, and the server sees r.Context().Done().
+// TaskTimeout/PageTimeout are both 30s, so a disconnect within the 5s window cannot come
+// from a natural timeout.
 func TestService_CancelAbortsInFlightRequest(t *testing.T) {
 	release := make(chan struct{})
 	var releaseOnce sync.Once
@@ -377,11 +386,11 @@ func TestService_CancelAbortsInFlightRequest(t *testing.T) {
 		case <-release:
 			_, _ = w.Write([]byte(`<html><body><p>慢页</p></body></html>`))
 		case <-r.Context().Done():
-			aborted <- struct{}{} // 爬取方真的断开了连接
+			aborted <- struct{}{} // the crawler really disconnected
 		}
 	}))
-	// defer 后进先出：兜底放行必须早于 srv.Close() 执行，否则用例中途 Fatal 时
-	// handler 还阻塞在 release 上，srv.Close() 会一直等它。
+	// defers run LIFO: the fallback release must run before srv.Close(), else a mid-test
+	// Fatal leaves the handler blocked on release and srv.Close() waits forever.
 	defer srv.Close()
 	defer doRelease()
 
@@ -395,7 +404,8 @@ func TestService_CancelAbortsInFlightRequest(t *testing.T) {
 		t.Fatalf("Submit error: %v", err)
 	}
 
-	// 必须在子页请求真的到达之后再取消，否则可能取消在出网之前，观测不到在飞请求。
+	// Cancel only after the subpage request actually arrives, else the cancel may precede
+	// the network call and no in-flight request can be observed.
 	select {
 	case <-slowStarted:
 	case <-time.After(10 * time.Second):
@@ -409,13 +419,13 @@ func TestService_CancelAbortsInFlightRequest(t *testing.T) {
 	select {
 	case <-aborted:
 	case <-time.After(5 * time.Second):
-		t.Fatal("in-flight request not aborted after Cancel: ctx cancel 未生效" +
-			"（TaskTimeout=30s，5s 内不会因超时自然结束）")
+		t.Fatal("in-flight request not aborted after Cancel: ctx cancel had no effect " +
+			"(TaskTimeout=30s, cannot end naturally by timeout within 5s)")
 	}
 }
 
-// TestService_CancelTerminalIsIdempotent 设计 §2.3：已终态任务取消是幂等 no-op，
-// 不得修改已有结果。
+// TestService_CancelTerminalIsIdempotent: design §2.3 — cancelling a terminal task is an
+// idempotent no-op and must not modify existing results.
 func TestService_CancelTerminalIsIdempotent(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
@@ -448,8 +458,9 @@ func TestService_GetUnknown(t *testing.T) {
 		t.Error("Cancel(unknown) should return false")
 	}
 
-	// 正向对照：已知 taskId 必须能被 Get 取回，且 TaskID 原样回填。
-	// 少了它，「未知返回 false」在一个「Get 永远返回 false」的实现下也是绿的。
+	// Positive control: a known taskId must be retrievable via Get with TaskID echoed back.
+	// Without it, "unknown returns false" also passes for an implementation where Get
+	// always returns false.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		_, _ = w.Write([]byte(`<html><body><p>正文</p></body></html>`))
@@ -468,10 +479,11 @@ func TestService_GetUnknown(t *testing.T) {
 	if task.TaskID != id {
 		t.Errorf("TaskID = %q, want %q", task.TaskID, id)
 	}
-	waitTerminal(t, svc2, id) // 让抓取 goroutine 收尾
+	waitTerminal(t, svc2, id) // let the crawl goroutine finish
 }
 
-// TestService_TimeoutKeepsPartial 设计 §2.2：任务超时保留部分结果并置 truncated。
+// TestService_TimeoutKeepsPartial: design §2.2 — on task timeout, keep partial results
+// and set truncated.
 func TestService_TimeoutKeepsPartial(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
@@ -485,7 +497,7 @@ func TestService_TimeoutKeepsPartial(t *testing.T) {
 	defer srv.Close()
 
 	cfg := testCrawlCfg()
-	cfg.TaskTimeout = 1 // 秒
+	cfg.TaskTimeout = 1 // seconds
 	svc := NewHTMLCrawlService(cfg)
 
 	id, _, err := svc.Submit(srv.URL+"/", "", nil)
@@ -500,6 +512,6 @@ func TestService_TimeoutKeepsPartial(t *testing.T) {
 		t.Error("Truncated = false, want true")
 	}
 	if task.Pages != 1 {
-		t.Errorf("Pages = %d, want 1 (已抓页面必须保留)", task.Pages)
+		t.Errorf("Pages = %d, want 1 (fetched pages must be kept)", task.Pages)
 	}
 }

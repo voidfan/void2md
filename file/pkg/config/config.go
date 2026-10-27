@@ -1,5 +1,6 @@
-// Package config 提供 file 模块的模块级配置（HTML 站点抓取、Markdown 分块）。
-// 项目级配置（Host/Port/日志）见 common/config。
+// Package config provides module-level configuration for the file module
+// (HTML site crawl, Markdown chunking). Project-level config (Host/Port/logging)
+// lives in common/config.
 package config
 
 import (
@@ -8,7 +9,7 @@ import (
 	commoncfg "void2md/common/config"
 )
 
-// Config file 模块配置
+// Config is the file module configuration.
 type Config struct {
 	HTMLCrawlConfig HTMLCrawlConfig `json:"htmlCrawlConfig"`
 }
@@ -18,7 +19,7 @@ var (
 	once sync.Once
 )
 
-// LoadConfig 加载 file 模块配置，使用 sync.Once 保证单例模式
+// LoadConfig loads the file module config (singleton via sync.Once).
 func LoadConfig() *Config {
 	once.Do(func() {
 		cfg = &Config{}

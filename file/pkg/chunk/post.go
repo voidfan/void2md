@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-// PostProcess 后处理：超长切分 → 孤儿前缀回收 → 超短合并 → index 重排。
+// PostProcess: split oversize → reclaim orphan prefixes → merge undersize → reindex.
 func PostProcess(chunks []Chunk, chunkSizes map[string]int, minRatio, maxRatio float64) []Chunk {
 	if len(chunks) == 0 {
 		return nil
@@ -25,7 +25,7 @@ func PostProcess(chunks []Chunk, chunkSizes map[string]int, minRatio, maxRatio f
 	return reindex(chunks)
 }
 
-// -- 阈值工具 --
+// -- threshold helpers --
 
 func maxSize(c *Chunk, sizes map[string]int, ratio float64) int {
 	if ratio <= 0 {
@@ -46,7 +46,7 @@ func minSize(c *Chunk, sizes map[string]int, ratio float64) int {
 	return int(math.Round(ratio * float64(base)))
 }
 
-// -- 阶段 1：超长切分 --
+// -- Phase 1: split oversize chunks --
 
 func splitLong(chunks []Chunk, sizes map[string]int, ratio float64) []Chunk {
 	var out []Chunk
@@ -96,8 +96,9 @@ func cloneWithPrefix(c Chunk, prefix, body string) Chunk {
 	body = strings.TrimSpace(body)
 	text := body
 	if prefix != "" && !strings.HasPrefix(body, prefix) {
-		// 标题级别去重：若 body 首行为标题且级别 <= 前缀末行标题级别，
-		// 则去掉前缀的最后一行（通常是重复的父标题），避免层级倒挂。
+		// Heading-level dedupe: if body's first line is a heading with level <= the
+		// prefix's last heading level, drop that prefix line (usually a duplicated
+		// parent heading) to avoid inverted hierarchy.
 		bodyFirst := strings.Split(body, "\n")[0]
 		if bodyM := HEADING_PATTERN.FindStringSubmatch(strings.TrimSpace(bodyFirst)); bodyM != nil {
 			bodyLevel := len(bodyM[1])
@@ -122,7 +123,7 @@ func cloneWithPrefix(c Chunk, prefix, body string) Chunk {
 	}
 }
 
-// -- 阶段 2：孤儿前缀回收 --
+// -- Phase 2: orphan prefix reclamation --
 
 func crossesSection(text string) bool {
 	lines := strings.Split(strings.TrimSpace(text), "\n")
@@ -203,7 +204,7 @@ func redistributeOrphans(chunks []Chunk, sizes map[string]int, maxRatio float64)
 	return out
 }
 
-// -- 阶段 3：超短合并 --
+// -- Phase 3: merge undersize chunks --
 
 func nodeMatch(curText, otherText, fallback string) bool {
 	curH := deepestHeading(curText)
@@ -308,7 +309,7 @@ func mergeShort(chunks []Chunk, sizes map[string]int, minRatio, maxRatio float64
 	return out
 }
 
-// -- 文本/类型/行号合并工具 --
+// -- text/type/line merge helpers --
 
 func mergeText(left, right string) string {
 	leftPre := ExtractHeadingPrefix(left)
@@ -317,7 +318,7 @@ func mergeText(left, right string) string {
 		return left + "\n\n" + right
 	}
 
-	// 在 rightPre 中寻找 leftPre 的最长子序列
+	// find the longest subsequence of leftPre within rightPre
 	bestCommon := 0
 	bestStart := 0
 	for start := 0; start < len(rightPre); start++ {
@@ -404,7 +405,7 @@ func maxNonZero(a, b int) int {
 	return m
 }
 
-// -- 阶段 4：index 重排 --
+// -- Phase 4: reindex --
 
 func reindex(chunks []Chunk) []Chunk {
 	out := make([]Chunk, len(chunks))

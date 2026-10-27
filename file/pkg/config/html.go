@@ -1,17 +1,17 @@
 package config
 
-// HTMLCrawlConfig 站点知识获取（/v1/htmlparse）配置
+// HTMLCrawlConfig is the site-knowledge crawl (/v1/htmlparse) configuration.
 type HTMLCrawlConfig struct {
-	Concurrency    int    `json:"concurrency"`    // 单任务内并发抓取数
-	MaxPages       int    `json:"maxPages"`       // 默认页数上限
-	HardMaxPages   int    `json:"hardMaxPages"`   // 入参 maxPage 的硬上限（clamp 到此值）
-	PageTimeout    int    `json:"pageTimeout"`    // 单页超时（秒）
-	TaskTimeout    int    `json:"taskTimeout"`    // 任务总预算（秒）
-	MaxHTMLSizeMB  int    `json:"maxHtmlSizeMB"`  // 单页 HTML 上限
-	MaxTaskBytesMB int    `json:"maxTaskBytesMB"` // 单任务累计 Markdown 上限（内存保护）
-	UserAgent      string `json:"userAgent"`      // 请求 UA
-	TaskTTLSeconds int    `json:"taskTtlSeconds"` // 任务结果保留时长
-	MaxTasks       int    `json:"maxTasks"`       // 同时存活任务数上限
+	Concurrency    int    `json:"concurrency"`    // concurrent page fetches within one task
+	MaxPages       int    `json:"maxPages"`       // default page limit
+	HardMaxPages   int    `json:"hardMaxPages"`   // hard cap for the maxPage request param (clamped to this)
+	PageTimeout    int    `json:"pageTimeout"`    // per-page timeout (seconds)
+	TaskTimeout    int    `json:"taskTimeout"`    // total task budget (seconds)
+	MaxHTMLSizeMB  int    `json:"maxHtmlSizeMB"`  // per-page HTML size limit
+	MaxTaskBytesMB int    `json:"maxTaskBytesMB"` // cumulative per-task Markdown limit (memory guard)
+	UserAgent      string `json:"userAgent"`      // request UA
+	TaskTTLSeconds int    `json:"taskTtlSeconds"` // task result retention duration
+	MaxTasks       int    `json:"maxTasks"`       // max concurrently live tasks
 }
 
 func DefaultHTMLCrawlConfig() HTMLCrawlConfig {
@@ -29,7 +29,7 @@ func DefaultHTMLCrawlConfig() HTMLCrawlConfig {
 	}
 }
 
-// Normalize 把「未设置」的字段补成默认值：**数值字段 <= 0、UserAgent 为空，
+// Normalize fills unset fields with defaults (numeric fields <= 0, empty UserAgent).
 func (c HTMLCrawlConfig) Normalize() HTMLCrawlConfig {
 	def := DefaultHTMLCrawlConfig()
 	if c.Concurrency <= 0 {

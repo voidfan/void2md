@@ -1,0 +1,171 @@
+[
+ {
+  "name": "ds_conn_test_get_405",
+  "method": "GET",
+  "path": "/v1/data_source/conn_test",
+  "headers": [
+   [
+    "Origin",
+    "http://example.com"
+   ]
+  ]
+ },
+ {
+  "name": "ds_conn_test_put_405",
+  "method": "PUT",
+  "path": "/v1/data_source/conn_test",
+  "headers": [
+   [
+    "Origin",
+    "http://example.com"
+   ]
+  ]
+ },
+ {
+  "name": "ds_conn_test_options_405",
+  "method": "OPTIONS",
+  "path": "/v1/data_source/conn_test",
+  "headers": [
+   [
+    "Origin",
+    "http://example.com"
+   ]
+  ]
+ },
+ {
+  "name": "ds_trailing_slash",
+  "method": "POST",
+  "path": "/v1/data_source/conn_test/",
+  "headers": [
+   [
+    "Origin",
+    "http://example.com"
+   ]
+  ]
+ },
+ {
+  "name": "ds_trailing_slash_query",
+  "method": "GET",
+  "path": "/v1/data_source/conn_test/?a=1&b=%20x",
+  "headers": [
+   [
+    "Origin",
+    "http://example.com"
+   ]
+  ]
+ },
+ {
+  "name": "ds_unknown_404",
+  "method": "GET",
+  "path": "/v1/data_source/nope",
+  "headers": [
+   [
+    "Origin",
+    "http://example.com"
+   ]
+  ]
+ },
+ {
+  "name": "ds_unknown_404_slash",
+  "method": "GET",
+  "path": "/v1/data_source/nope/",
+  "headers": [
+   [
+    "Origin",
+    "http://example.com"
+   ]
+  ]
+ },
+ {
+  "name": "ds_get_404_no_origin",
+  "method": "GET",
+  "path": "/v1/data_source/nope",
+  "headers": []
+ },
+ {
+  "name": "root_404",
+  "method": "GET",
+  "path": "/nope",
+  "headers": [
+   [
+    "Origin",
+    "http://example.com"
+   ]
+  ]
+ },
+ {
+  "name": "double_slash_prefix_404",
+  "method": "POST",
+  "path": "/v1/data_source//conn_test",
+  "headers": [
+   [
+    "Origin",
+    "http://example.com"
+   ]
+  ]
+ },
+ {
+  "name": "preflight_ok",
+  "method": "OPTIONS",
+  "path": "/v1/data_source/sql_format",
+  "headers": [
+   [
+    "Origin",
+    "http://example.com"
+   ],
+   [
+    "Access-Control-Request-Method",
+    "GET"
+   ]
+  ]
+ },
+ {
+  "name": "preflight_lowercase_method",
+  "method": "OPTIONS",
+  "path": "/v1/data_source/sql_format",
+  "headers": [
+   [
+    "Origin",
+    "http://example.com"
+   ],
+   [
+    "Access-Control-Request-Method",
+    "get"
+   ]
+  ]
+ },
+ {
+  "name": "preflight_private_network",
+  "method": "OPTIONS",
+  "path": "/v1/data_source/sql_format",
+  "headers": [
+   [
+    "Origin",
+    "http://example.com"
+   ],
+   [
+    "Access-Control-Request-Method",
+    "GET"
+   ],
+   [
+    "Access-Control-Request-Private-Network",
+    "true"
+   ]
+  ]
+ },
+ {
+  "name": "preflight_404_path",
+  "method": "OPTIONS",
+  "path": "/nope",
+  "headers": [
+   [
+    "Origin",
+    "http://example.com"
+   ],
+   [
+    "Access-Control-Request-Method",
+    "GET"
+   ]
+  ]
+ }
+]

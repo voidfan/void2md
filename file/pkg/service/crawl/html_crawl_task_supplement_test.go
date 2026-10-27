@@ -1,14 +1,15 @@
 package service
 
-// 本文件是 Task 9 的**补充测试**（计划 Task 9 的测试块之外的第三个文件）。
+// This file supplements Task 9's tests (a third file beyond the planned test block).
 //
-// 存在理由：计划 Task 9 的测试块对下列语义零检测力——把实现按这些方向变异后，
-// 计划测试块仍然全绿（见 Task 9 报告的「补测前」列）。每条用例都对应一个
-// 已实测存活过的变异，注释里点名它钉住的实现行为与变异，便于复核。
+// Reason: the planned Task 9 tests had zero detection power for the semantics below —
+// mutating the implementation in these directions left the planned tests all green (see
+// the "before supplements" column of the Task 9 report). Each test corresponds to a
+// mutation verified to survive; comments name the pinned behavior and the mutation.
 //
-// 命名沿用 TestStore_ 前缀，因此 `go test ./internal/service/ -run TestStore`
-// 会与计划用例一并执行；每条用例都自带静态前置断言（fixture 真的生效），
-// 避免「夹具为空 → 断言恒真」这一类空转。
+// Named with the TestStore_ prefix so `go test ./internal/service/ -run TestStore` runs
+// them together with the planned tests; each carries static pre-assertions (the fixture
+// really took effect) to avoid "empty fixture → vacuously true assertion".
 
 import (
 	"encoding/hex"
@@ -21,14 +22,14 @@ import (
 	"void2md/file/pkg/crawler"
 )
 
-// TestStore_SuccessPayload 钉住 finishSuccess 的产出本身：
-// items / pages / markdown（含来源注释）/ truncated 传播。
+// TestStore_SuccessPayload pins finishSuccess's output itself:
+// items / pages / markdown (with source comments) / truncated propagation.
 //
-// 变异 m8（`e.task.Markdown = ""`）与 m9（`finishLocked(..., res.Truncated)`
-// 改成 `false`）在计划测试块下均存活：计划只在 TestStore_Dedup 与
-// TestStore_TTLsweep 里调用 finishSuccess，且只断言「终态后可重新提交」
-// 「TTL 后可被清扫」，从不断言产出。本用例对每个字段做正向断言：
-// 该出现的东西必须出现。
+// Mutations m8 (`e.task.Markdown = ""`) and m9 (`finishLocked(..., res.Truncated)` changed
+// to `false`) survived the planned tests: the plan only called finishSuccess in
+// TestStore_Dedup and TestStore_TTLsweep, asserting only "resubmit after terminal" and
+// "sweep after TTL", never the output. This test asserts every field positively: what
+// should appear must appear.
 func TestStore_SuccessPayload(t *testing.T) {
 	s := newTestStore()
 	id, _, err := s.submit("https://a.com/", crawler.Options{})
@@ -59,7 +60,8 @@ func TestStore_SuccessPayload(t *testing.T) {
 	if task.Items[1].URL != "https://a.com/2" || task.Items[1].Title != "第二页" || task.Items[1].Markdown != "正文二" {
 		t.Errorf("Items[1] = %+v, want the second page verbatim", task.Items[1])
 	}
-	// markdown 是 items 的拼接，且每页前带来源注释（下游分块器据此标注 chunk 来源）
+	// markdown is the concatenation of items, each page preceded by a source comment
+	// (downstream chunkers use it to annotate chunk provenance)
 	for _, want := range []string{
 		"<!-- source: https://a.com/1 -->", "正文一",
 		"<!-- source: https://a.com/2 -->", "正文二",
@@ -68,7 +70,7 @@ func TestStore_SuccessPayload(t *testing.T) {
 			t.Errorf("Markdown must contain %q, got %q", want, task.Markdown)
 		}
 	}
-	// 页序：第一页的来源注释必须出现在第二页之前
+	// page order: page 1's source comment must appear before page 2's
 	if strings.Index(task.Markdown, "https://a.com/1") > strings.Index(task.Markdown, "https://a.com/2") {
 		t.Errorf("Markdown must keep crawl order, got %q", task.Markdown)
 	}
@@ -80,12 +82,13 @@ func TestStore_SuccessPayload(t *testing.T) {
 	}
 }
 
-// TestStore_CancelTerminalIsIdempotent 钉住 cancel() 对已终态任务的幂等语义：
-// 返回 true（任务存在，DELETE 应回 204 而非 404），且不改动已有结果。
+// TestStore_CancelTerminalIsIdempotent pins cancel()'s idempotent semantics on terminal
+// tasks: returns true (task exists, DELETE should answer 204 not 404) and leaves existing
+// results untouched.
 //
-// 变异 m3（`return true // 已终态` 改成 `return false`）在计划测试块下存活：
-// 计划只在 TestStore_CancelBeforeSetCancel 里对 **pending** 任务调 cancel，
-// 从未对终态任务调过。
+// Mutation m3 (`return true // already terminal` changed to `return false`) survived the
+// planned tests: the plan only called cancel on a **pending** task in
+// TestStore_CancelBeforeSetCancel, never on a terminal one.
 func TestStore_CancelTerminalIsIdempotent(t *testing.T) {
 	s := newTestStore()
 	id, _, err := s.submit("https://a.com/", crawler.Options{})
@@ -112,12 +115,13 @@ func TestStore_CancelTerminalIsIdempotent(t *testing.T) {
 	}
 }
 
-// TestStore_FinishCancelledClearsPayload 钉住 finishCancelled 的清载荷行为
-// （「任务因 ctx 取消而结束」也属设计 §2.2 的 cancelled 语义）。
+// TestStore_FinishCancelledClearsPayload pins finishCancelled's payload clearing
+// ("task ended due to ctx cancel" is also design §2.2 cancelled semantics).
 //
-// 变异 m5（删掉三行清载荷）在计划测试块下存活：计划里没有任何用例调用
-// finishCancelled。这里白盒塞入非空载荷（模拟「已抓了几页后 ctx 被取消」），
-// 并以静态前置断言确认夹具真的生效，再断言被清空。
+// Mutation m5 (delete the three payload-clearing lines) survived the planned tests: no
+// planned test called finishCancelled. Here we white-box a non-empty payload (simulating
+// "ctx cancelled after a few pages were fetched"), confirm via static pre-assertion that
+// the fixture took effect, then assert it is cleared.
 func TestStore_FinishCancelledClearsPayload(t *testing.T) {
 	s := newTestStore()
 	id, _, err := s.submit("https://a.com/", crawler.Options{})
@@ -125,16 +129,17 @@ func TestStore_FinishCancelledClearsPayload(t *testing.T) {
 		t.Fatalf("submit error: %v", err)
 	}
 	s.setRunning(id)
-	s.setProgress(id, 3) // 运行中已报告完成 3 页
+	s.setProgress(id, 3) // 3 pages already reported done while running
 
-	// 白盒塞入载荷：模拟 run 里已完成但尚未提交的结果
+	// white-box payload: simulates results computed in run but not yet committed
 	s.mu.Lock()
 	e := s.tasks[id]
 	e.task.Markdown = "半截结果"
 	e.task.Items = []HTMLCrawlItem{{URL: "https://a.com/1", Markdown: "半截结果"}}
 	s.mu.Unlock()
 
-	// 前置断言：夹具确实生效（否则下面的断言会因载荷本就是空的而恒真）
+	// pre-assertion: the fixture really took effect (else the assertions below would be
+	// vacuously true on an already-empty payload)
 	pre, ok := s.get(id)
 	if !ok {
 		t.Fatal("fixture: task must be queryable")
@@ -158,19 +163,20 @@ func TestStore_FinishCancelledClearsPayload(t *testing.T) {
 	if task.Truncated || task.Error != "" {
 		t.Errorf("cancelled task must carry no truncated/error flags, got %+v", task)
 	}
-	// 终态后同 URL 可重新提交
+	// after terminal state the same URL can be resubmitted
 	if _, deduped, _ := s.submit("https://a.com/", crawler.Options{}); deduped {
 		t.Error("after cancel, submit of the same url must not be deduped")
 	}
 }
 
-// TestStore_TerminalReleasesURLIndex 钉住 finishLocked 的 delete(s.byURL, ...)。
+// TestStore_TerminalReleasesURLIndex pins finishLocked's delete(s.byURL, ...).
 //
-// 变异 m2（删掉该 delete）在计划测试块下存活：submit 里有自愈分支——命中
-// byURL 但条目已不 alive 时就地 delete 再新建——所以「终态后重新提交」依旧
-// 拿到新 id、deduped=false，计划用例完全察觉不到。代价是 byURL 会永久残留
-// 指向非存活任务的条目（内存只增不减，且与设计 §2.1「规范化 URL → **存活**
-// 任务 ID」的索引语义不符）。本用例直接断言索引被释放。
+// Mutation m2 (delete that delete) survived the planned tests: submit has a self-heal
+// branch — a byURL hit whose entry is no longer alive is deleted in place and recreated —
+// so "resubmit after terminal" still got a new id with deduped=false, invisible to the
+// plan. The cost: byURL permanently retains entries pointing at non-alive tasks (memory
+// only grows, and it violates design §2.1's "normalized URL → *alive* task ID" index
+// semantics). This test asserts the index is released directly.
 func TestStore_TerminalReleasesURLIndex(t *testing.T) {
 	s := newTestStore()
 	const url = "https://a.com/"
@@ -179,7 +185,8 @@ func TestStore_TerminalReleasesURLIndex(t *testing.T) {
 		t.Fatalf("submit error: %v", err)
 	}
 
-	// 前置断言：存活时确实在索引里（否则「已释放」的断言可能因索引从未建立而恒真）
+	// pre-assertion: really indexed while alive (else "released" could be vacuously true
+	// because the index was never built)
 	s.mu.Lock()
 	_, indexedWhileAlive := s.byURL[url]
 	s.mu.Unlock()
@@ -196,7 +203,7 @@ func TestStore_TerminalReleasesURLIndex(t *testing.T) {
 		t.Errorf("a terminal task must be removed from byURL, it still points at %q", idx)
 	}
 
-	// 正向：重新提交拿到新任务，并重新占用索引
+	// positive: resubmission creates a new task and re-occupies the index
 	id2, deduped, err := s.submit(url, crawler.Options{})
 	if err != nil {
 		t.Fatalf("resubmit error: %v", err)
@@ -212,12 +219,14 @@ func TestStore_TerminalReleasesURLIndex(t *testing.T) {
 	}
 }
 
-// TestStore_ItemsNeverNull 钉住「items 永远是数组而非 null」的响应契约
-// （设计 §2.2 响应示例；实现里 get 的防御性拷贝 + 构造函数的 Items 初始化）。
+// TestStore_ItemsNeverNull pins the "items is always an array, never null" response
+// contract (design §2.2 response example; implemented by get's defensive copy + Items
+// initialization in the constructor).
 //
-// 变异 m11（同时删掉 get 里的防御性拷贝与构造函数的 Items 初始化）在计划
-// 测试块下存活：计划只用 len(task.Items) 判断，nil 与空切片都等于 0。
-// 后果是响应体从 "items": [] 变成 "items": null，下游按数组解析会出错。
+// Mutation m11 (delete both the defensive copy in get and the constructor's Items init)
+// survived the planned tests: the plan only checked len(task.Items), and nil vs empty
+// slice both equal 0. The consequence: the response body turns from "items": [] into
+// "items": null, breaking downstream array parsing.
 func TestStore_ItemsNeverNull(t *testing.T) {
 	s := newTestStore()
 
@@ -233,7 +242,7 @@ func TestStore_ItemsNeverNull(t *testing.T) {
 		t.Error("pending task Items must be a non-nil empty slice, otherwise JSON emits \"items\": null")
 	}
 
-	// 终态路径同样：failed / cancelled 都必须是非 nil 空切片
+	// terminal paths too: failed / cancelled must both be non-nil empty slices
 	id2, _, _ := s.submit("https://b.com/", crawler.Options{})
 	s.finishFailed(id2, nil)
 	t2, ok := s.get(id2)
@@ -257,18 +266,17 @@ func TestStore_ItemsNeverNull(t *testing.T) {
 	}
 }
 
-// TestStore_SweepNeverDropsUnfinishedEntries 钉住 sweepLocked 的
-// `!e.doneAt.IsZero()` 守卫（htmlCrawlEntry.doneAt 的字段注释：
-// **零值表示未进入终态**）。
+// TestStore_SweepNeverDropsUnfinishedEntries pins sweepLocked's `!e.doneAt.IsZero()`
+// guard (per htmlCrawlEntry.doneAt's field comment: zero means not terminal yet).
 //
-// 变异 m6（删掉该守卫）在计划测试块下存活：计划的 TestStore_TTLsweep 只覆盖
-// 「终态且已过 TTL」，而 finishLocked 总是同时置 alive=false 与 doneAt，所以
-// 删掉守卫后所有真实路径的行为都不变。守卫真正生效的场景是「条目已标记为
-// 不存活、但 doneAt 尚未落定」——没有守卫时这种条目会被立刻清扫（在回调/
-// 竞态时序下等于任务凭空消失）。
+// Mutation m6 (delete the guard) survived the planned tests: TestStore_TTLsweep only
+// covers "terminal and past TTL", and finishLocked always sets alive=false and doneAt
+// together, so removing the guard changed no real path. The guard matters for "entry
+// marked not-alive but doneAt not yet set" — without it such entries are swept instantly
+// (under callback/race timing, tasks would vanish into thin air).
 //
-// 用例内含反向断言（把 doneAt 落实为过去时间后**必须**被扫掉），
-// 以确保「没被扫掉」不是因为 sweepLocked 整体失效而恒真。
+// Includes a negative assertion (doneAt set into the past must be swept) so "not swept"
+// can't be vacuously true from sweepLocked being broken entirely.
 func TestStore_SweepNeverDropsUnfinishedEntries(t *testing.T) {
 	s := newTestStore()
 	id, _, err := s.submit("https://a.com/", crawler.Options{})
@@ -277,16 +285,16 @@ func TestStore_SweepNeverDropsUnfinishedEntries(t *testing.T) {
 	}
 
 	s.mu.Lock()
-	s.tasks[id].alive = false // 不存活……
-	// ……但 doneAt 仍是零值：按字段注释它「未进入终态」，不属可清扫对象
+	s.tasks[id].alive = false // not alive…
+	// …but doneAt is still zero: per the field comment, "not terminal yet", not sweepable
 	s.sweepLocked()
 	_, survived := s.tasks[id]
 	s.mu.Unlock()
 	if !survived {
-		t.Error("sweepLocked must not drop an entry whose doneAt is still zero (未进入终态)")
+		t.Error("sweepLocked must not drop an entry whose doneAt is still zero (not terminal yet)")
 	}
 
-	// 反向断言：doneAt 落实并超过 TTL 后，同一条目必须被扫掉
+	// negative assertion: once doneAt is set and past the TTL, the same entry must be swept
 	s.mu.Lock()
 	s.tasks[id].doneAt = time.Now().Add(-time.Duration(s.cfg.TaskTTLSeconds+60) * time.Second)
 	s.sweepLocked()
@@ -297,12 +305,13 @@ func TestStore_SweepNeverDropsUnfinishedEntries(t *testing.T) {
 	}
 }
 
-// TestStore_LateProgressDoesNotResurrectPayload 钉住 setProgress / setRunning
-// 的存活判断（「cancelled → 丢弃已抓页面」是 Task 9 的核心语义）。
+// TestStore_LateProgressDoesNotResurrectPayload pins setProgress / setRunning's aliveness
+// check ("cancelled → discard fetched pages" is Task 9's core semantic).
 //
-// 计划用例从未覆盖这两个方法的 `e.alive` 判断：把 `ok && e.alive` 退化成只看
-// `ok`（变异 m12/m13）后，运行中 goroutine 的一次迟到回调就能让刚被取消的
-// 任务重新出现 pages>0、甚至状态倒退回 running，而计划测试块全绿。
+// The planned tests never covered these methods' `e.alive` check: degrading `ok && e.alive`
+// to just `ok` (mutations m12/m13) lets one late callback from the running goroutine give
+// a just-cancelled task pages>0 again, or even flip its status back to running — with the
+// planned tests all green.
 func TestStore_LateProgressDoesNotResurrectPayload(t *testing.T) {
 	s := newTestStore()
 	id, _, err := s.submit("https://a.com/", crawler.Options{})
@@ -311,7 +320,8 @@ func TestStore_LateProgressDoesNotResurrectPayload(t *testing.T) {
 	}
 	s.setRunning(id)
 
-	// 前置断言：setRunning 确实生效（证明下面「状态没被改回去」不是因为根本没生效过）
+	// pre-assertion: setRunning really took effect (proves "status wasn't flipped back"
+	// below isn't because it never applied)
 	pre, ok := s.get(id)
 	if !ok {
 		t.Fatal("task not found after submit")
@@ -324,8 +334,8 @@ func TestStore_LateProgressDoesNotResurrectPayload(t *testing.T) {
 		t.Fatal("cancel must succeed on a running task")
 	}
 
-	s.setProgress(id, 7) // 迟到的进度回调
-	s.setRunning(id)     // 迟到的状态回调
+	s.setProgress(id, 7) // late progress callback
+	s.setRunning(id)     // late status callback
 
 	task, ok := s.get(id)
 	if !ok {
@@ -342,13 +352,13 @@ func TestStore_LateProgressDoesNotResurrectPayload(t *testing.T) {
 	}
 }
 
-// TestStore_FinishFailedNilErrorUsesDefault 钉住 finishFailed 对 nil error 的兜底：
-// 失败任务的 error 字段必须非空。接口把该字段直接作为 error 暴露给调用方，
-// 空串等于「失败了但不说原因」。
+// TestStore_FinishFailedNilErrorUsesDefault pins finishFailed's nil-error fallback: a
+// failed task's error field must be non-empty. The API exposes that field directly as
+// error; an empty string means "failed without saying why".
 //
-// 计划测试块只在 TestStore_MaxTasks 里用 nil 调过一次 finishFailed，而那条用例
-// 只断言「名额被释放」，从不读 Error——把 `msg := "unknown error"` 改成 `msg := ""`
-// （变异 m14）后计划用例全绿。
+// The planned tests called finishFailed with nil only once in TestStore_MaxTasks, which
+// asserted only "slot released" and never read Error — changing `msg := "unknown error"`
+// to `msg := ""` (mutation m14) left the plan all green.
 func TestStore_FinishFailedNilErrorUsesDefault(t *testing.T) {
 	s := newTestStore()
 	id, _, err := s.submit("https://a.com/", crawler.Options{})
@@ -369,11 +379,12 @@ func TestStore_FinishFailedNilErrorUsesDefault(t *testing.T) {
 	}
 }
 
-// TestStore_TaskIDFormat 钉住 newTaskID 的文档化契约（「生成 16 位十六进制任务
-// ID，前缀 hpa_」）：前缀 + 总长 20 + 十六进制 + 两次提交互不相同。
+// TestStore_TaskIDFormat pins newTaskID's documented contract ("16-hex-digit task ID with
+// hpa_ prefix"): prefix + total length 20 + hex + distinct across two submits.
 //
-// 计划用例只断言 id1 != id3（且那是去重路径上的断言），既不校验前缀也不校验
-// 长度——把 `hex.EncodeToString(b[:])` 改成 `b[:4]`（变异 m15）后计划用例全绿。
+// The planned tests only asserted id1 != id3 (on the dedupe path), checking neither prefix
+// nor length — changing `hex.EncodeToString(b[:])` to `b[:4]` (mutation m15) left the plan
+// all green.
 func TestStore_TaskIDFormat(t *testing.T) {
 	s := newTestStore()
 	id1, _, err := s.submit("https://a.com/1", crawler.Options{})
@@ -401,24 +412,25 @@ func TestStore_TaskIDFormat(t *testing.T) {
 }
 
 // ---- BEGIN audit-response tests ----
-// 以上是 supplement_v1（首轮补测，共 9 条）。以下两条是对一轮只读审计
-// （2026-09-16）报出的缺口的回应，审计当时用的正是 supplement_v1：
-// 实测 m17 / m16 在 supplement_v1 下仍然存活。
+// Above is supplement_v1 (first round, 9 tests). The two below respond to gaps reported by
+// a read-only audit (2026-09-16) that used supplement_v1: m17 / m16 were measured to
+// still survive it.
 
-// TestStore_TerminalFinishWithoutAliveGuardIsIgnored 钉住 finishSuccess /
-// finishFailed / finishCancelled 三处的 `!e.alive` 守卫。
+// TestStore_TerminalFinishWithoutAliveGuardIsIgnored pins the `!e.alive` guards in
+// finishSuccess / finishFailed / finishCancelled.
 //
-// 审计实测：把这三处 `if !ok || !e.alive { return }` 同时改成 `if !ok { return }`
-// （变异 m17），**带着 supplement_v1 也全绿**。这是「DELETE 返回 204 之后，
-// 仍在飞的抓取不得覆写已取消任务」的唯一防线：守卫没了，迟到的 finishSuccess
-// 会把任务从 cancelled 翻成 success 并回填 markdown/items，直接违背设计 §2.3。
+// Audit measurement: changing all three `if !ok || !e.alive { return }` to `if !ok { return }`
+// (mutation m17) stayed green even with supplement_v1. This is the only defense for "after
+// DELETE returns 204, an in-flight crawl must not overwrite the cancelled task": without the
+// guard, a late finishSuccess flips cancelled to success and refills markdown/items, directly
+// violating design §2.3.
 //
-// Task 10 的 CancelDiscardsPages 走的是 ctx 取消 → finishCancelled 路径，而
-// cancel() 已经先把 alive 置 false，所以那条路径上看不见这个洞。
+// Task 10's CancelDiscardsPages takes the ctx-cancel → finishCancelled path, where cancel()
+// already set alive=false first, so the hole is invisible on that path.
 //
-// doneAt 的断言是为了让三个子用例都有区分力：对 finishCancelled 而言状态本就
-// 是 cancelled、载荷本就为空，去掉守卫唯一的可观测差异就是 doneAt 被刷新
-// （任务在内存里多留一个 TTL）。
+// The doneAt assertion makes all three subtests discriminating: for finishCancelled the status
+// is already cancelled and the payload already empty, so without the guard the only observable
+// difference is doneAt being refreshed (the task stays in memory one more TTL).
 func TestStore_TerminalFinishWithoutAliveGuardIsIgnored(t *testing.T) {
 	res := &crawler.Result{Pages: []crawler.Page{{URL: "https://a.com/1", Markdown: "迟到结果"}}}
 
@@ -442,7 +454,8 @@ func TestStore_TerminalFinishWithoutAliveGuardIsIgnored(t *testing.T) {
 				t.Fatal("fixture: cancel must succeed on a running task")
 			}
 
-			// 前置断言：确实已是终态且载荷已清空（否则下面的断言会因夹具未生效而恒真）
+			// pre-assertion: really terminal with an empty payload (else the assertions
+			// below would be vacuously true because the fixture never applied)
 			pre, ok := s.get(id)
 			if !ok {
 				t.Fatal("fixture: task must be queryable")
@@ -457,7 +470,7 @@ func TestStore_TerminalFinishWithoutAliveGuardIsIgnored(t *testing.T) {
 				t.Fatal("fixture: a terminal task must have a non-zero doneAt")
 			}
 
-			tc.finish(s, id) // 迟到的终态回调：必须被守卫丢掉
+			tc.finish(s, id) // late terminal callback: must be dropped by the guard
 
 			task, ok := s.get(id)
 			if !ok {
@@ -483,19 +496,19 @@ func TestStore_TerminalFinishWithoutAliveGuardIsIgnored(t *testing.T) {
 	}
 }
 
-// TestStore_TooManyRequestsDiagnosisCode 绕开 isTooManyRequests，独立断言 429 的
-// 诊断码。
+// TestStore_TooManyRequestsDiagnosisCode bypasses isTooManyRequests and asserts the 429
+// diagnosis code independently.
 //
-// 审计指出：TestStore_MaxTasks 用 isTooManyRequests(err) 断言，而那正是 submit
-// 内部使用的判据——属于「用自己的判据测自己」。把 helper 里的 DCode 比较删掉、
-// 只留 StatusCode == 429（变异 m16），所有用例照旧全绿，而接口响应里的
-// diagnosisCode 会从 FF000D 静默变成别的码，下游按 diagnosisCode 分流时
-// 把「请求过多」误判为「参数错误」。设计 §2.1/§5 新增 FF000D 正是为了让这个
-// 语义可被区分。
+// The audit noted: TestStore_MaxTasks asserts via isTooManyRequests(err), which is exactly
+// submit's internal predicate — testing itself with its own criterion. Deleting the helper's
+// DCode comparison and keeping only StatusCode == 429 (mutation m16) left all tests green,
+// while the API response's diagnosisCode would silently change from FF000D to another code;
+// downstream routing by diagnosisCode would misread "too many requests" as "invalid param".
+// Design §2.1/§5 added FF000D to make this semantic distinguishable.
 //
-// 这里直接断言 DiagnosisException 的字段，并写出**字面量**而不是与
-// diagnosis.ErrorTooManyRequestsDiagnosisCode 比较——后者会退化成「两处声明
-// 一致」型的空转断言（两个声明同时被改仍然全绿）。
+// Asserts DiagnosisException fields directly with the *literal*, not a comparison against
+// diagnosis.ErrorTooManyRequestsDiagnosisCode — the latter degrades into a vacuous
+// "two declarations agree" assertion (both changed together still passes).
 func TestStore_TooManyRequestsDiagnosisCode(t *testing.T) {
 	cfg := testCrawlCfg()
 	cfg.MaxTasks = 1
@@ -516,23 +529,24 @@ func TestStore_TooManyRequestsDiagnosisCode(t *testing.T) {
 		t.Errorf("StatusCode = %d, want 429", de.StatusCode)
 	}
 	if de.DCode != "0x0000000000FF000D" {
-		t.Errorf("DCode = %q, want the literal \"0x0000000000FF000D\" (FF000D 请求过多)", de.DCode)
+		t.Errorf("DCode = %q, want the literal \"0x0000000000FF000D\" (FF000D too many requests)", de.DCode)
 	}
 }
 
-// TestStore_SourceMarkerCannotBeEscaped 钉住来源注释的**结构完整性**：无论 URL 里
-// 出现什么序列，每页那行 `<!-- source: <url> -->` 都必须恰好构成**一个**完整注释，
-// 不得被 URL 自带的 `-->` 提前闭合。
+// TestStore_SourceMarkerCannotBeEscaped pins the *structural integrity* of source comments:
+// whatever sequences a URL contains, each page's `<!-- source: <url> -->` line must form
+// exactly one complete comment, never closed early by a `-->` inside the URL.
 //
-// 为什么需要：`finishSuccess` 把 URL 直接拼进注释，而 URL 的 query 在归一化
-// （`crawler.NormalizeURL` 只小写 host、去 fragment/默认端口）与 `url.URL.String()`
-// 里都是**原样保留**的 —— 一条 `?x=--><svg/onload=alert(1)>` 形状的同域链接会让注释
-// 在第一处 `-->` 结束，其后的 `<svg/onload=...>` 不再是注释文本，而是**活的**
-// Markdown/HTML，随聚合 markdown 一起流向下游（/v1/chunk、知识库）。设计 §2.2 明确
-// 依赖「注释在 Markdown 渲染时不可见」，该承诺对这类 URL 不成立。
+// Why it's needed: finishSuccess concatenates the URL straight into the comment, and URL
+// queries are preserved verbatim by both normalization (crawler.NormalizeURL only lowercases
+// host, strips fragment/default port) and url.URL.String() — a same-origin link shaped like
+// `?x=--><svg/onload=alert(1)>` ends the comment at the first `-->`, and the following
+// `<svg/onload=...>` is no longer comment text but *live* Markdown/HTML flowing downstream
+// (/v1/chunk, knowledge base) with the aggregated markdown. Design §2.2 explicitly relies on
+// "comments are invisible when Markdown renders"; that promise fails for such URLs.
 //
-// 变异判定：把 `commentSafeURL` 去掉（还原成 `"<!-- source: " + p.URL + " -->"`），
-// 本用例失败、其余用例全绿 —— 这正是当时 13 个变异体都没覆盖到的形状。
+// Mutation check: removing commentSafeURL (back to `"<!-- source: " + p.URL + " -->"`) fails
+// this test while all others stay green — the shape none of the 13 mutants covered at the time.
 func TestStore_SourceMarkerCannotBeEscaped(t *testing.T) {
 	evil := "https://a.com/next?x=--><svg/onload=alert(1)>"
 
@@ -553,31 +567,35 @@ func TestStore_SourceMarkerCannotBeEscaped(t *testing.T) {
 		t.Fatal("finished task must be queryable within TTL")
 	}
 
-	// 前置断言：夹具必须真的把危险序列带进来了，否则下面的断言全部恒真。
+	// pre-assertion: the fixture really brought the dangerous sequence in, else every
+	// assertion below is vacuously true.
 	if !strings.Contains(task.Items[1].URL, "-->") {
-		t.Fatalf("fixture broken: items[1].URL = %q 里没有 -->", task.Items[1].URL)
+		t.Fatalf("fixture broken: items[1].URL = %q contains no -->", task.Items[1].URL)
 	}
 
-	// 两页 → 聚合结果里恰好两个注释终结符。多出来的那个就是 URL 提前闭合注释留下的。
+	// two pages → exactly two comment terminators in the aggregate. Any extra one was left
+	// by a URL closing its comment early.
 	if n := strings.Count(task.Markdown, "-->"); n != 2 {
-		t.Errorf("注释终结符 %d 个，want 2（每页一个）：URL 里的 --> 提前闭合了注释，markdown = %q",
+		t.Errorf("comment terminators = %d, want 2 (one per page): the URL's --> closed the comment early, markdown = %q",
 			n, task.Markdown)
 	}
-	// 危险载荷不得出现在注释之外 —— 出现 `--><svg` 就说明它逃出来了。
+	// the dangerous payload must not appear outside a comment — `--><svg` means it escaped.
 	if strings.Contains(task.Markdown, "--><svg") {
-		t.Errorf("URL 里的 --> 逃出了注释，<svg> 成了活标签，markdown = %q", task.Markdown)
+		t.Errorf("the URL's --> escaped the comment and <svg> became a live tag, markdown = %q", task.Markdown)
 	}
-	// items[].URL 仍是**未加工**的原文：转义只服务于注释，不得改写数据本身，
-	// 否则下游按 items[].url 溯源会拿到一个被改过的 URL。
+	// items[].URL is still the raw original: escaping serves the comment only and must not
+	// rewrite the data, else downstream provenance via items[].url gets a modified URL.
 	if task.Items[1].URL != evil {
-		t.Errorf("items[1].URL = %q, want the raw URL %q 原样保留", task.Items[1].URL, evil)
+		t.Errorf("items[1].URL = %q, want the raw URL %q preserved verbatim", task.Items[1].URL, evil)
 	}
 }
 
-// TestStore_SourceMarkerChunkStillCarriesSource 钉住转义之后**溯源能力仍在**：
-// 注释里必须还能读到来源 URL（下游 chunk 靠它标注来源），转义不得把 URL 抹掉。
+// TestStore_SourceMarkerChunkStillCarriesSource pins that provenance still works after
+// escaping: the source URL must remain readable in the comment (downstream chunks rely on
+// it for source annotation); escaping must not erase the URL.
 //
-// 与上一条互补：上一条防「逃出注释」，这条防「修过头 —— 把 URL 整段删掉/编码成不可读」。
+// Complements the previous test: that one guards against "escaping the comment", this one
+// against "over-fixing — deleting the URL entirely or encoding it unreadably".
 func TestStore_SourceMarkerChunkStillCarriesSource(t *testing.T) {
 	s := newTestStore()
 	id, _, err := s.submit("https://a.com/", crawler.Options{})
@@ -592,6 +610,6 @@ func TestStore_SourceMarkerChunkStillCarriesSource(t *testing.T) {
 		t.Fatal("finished task must be queryable within TTL")
 	}
 	if !strings.Contains(task.Markdown, "<!-- source: https://a.com/docs/intro -->") {
-		t.Errorf("注释里必须保留可读的来源 URL，markdown = %q", task.Markdown)
+		t.Errorf("the comment must keep a readable source URL, markdown = %q", task.Markdown)
 	}
 }

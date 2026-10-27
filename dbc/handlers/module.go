@@ -25,7 +25,7 @@ func init() {
 	if err != nil {
 		// Do not kill the host service: warn and leave svc nil so Mount
 		// skips route registration and the other modules keep working.
-		slog.Warn("dbc 配置加载失败，跳过 /dbc 路由挂载", "path", configPath, "error", err)
+		slog.Warn("dbc config load failed; skipping /v1/dbc route mount", "path", configPath, "error", err)
 		return
 	}
 
@@ -40,6 +40,6 @@ func Mount(r *gin.Engine) {
 		return
 	}
 
-	group := r.Group("/dbc")
-	group.Any("/*path", gin.WrapH(http.StripPrefix("/dbc", svc.SetupRoutes())))
+	group := r.Group("/v1/dbc")
+	group.Any("/*path", gin.WrapH(http.StripPrefix("/v1/dbc", svc.SetupRoutes())))
 }

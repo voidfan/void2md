@@ -11,25 +11,26 @@ import (
 	htmld "void2md/file/pkg/service/crawl"
 )
 
-// getHTMLCrawlService 提供服务的取值点，测试可替换。
+// getHTMLCrawlService is the service accessor; replaceable in tests.
 var getHTMLCrawlService = htmld.GetHTMLCrawlService
 
-// htmlParseRequest POST /v1/htmlparse 请求体。
-// MaxPage 用指针区分「未传」（nil，用服务端默认）与「显式传 0」（非法，400）。
+// htmlParseRequest is the POST /v1/htmlparse request body.
+// MaxPage is a pointer to distinguish "not sent" (nil → server default) from
+// "explicitly 0" (invalid → 400).
 type htmlParseRequest struct {
 	URL      string `json:"url"`
 	Selector string `json:"selector"`
 	MaxPage  *int   `json:"maxPage"`
 }
 
-// RegisterHTMLParseRoutes 注册站点知识获取路由。
+// RegisterHTMLParseRoutes registers the site-knowledge routes.
 func RegisterHTMLParseRoutes(router *gin.RouterGroup) {
 	router.POST("/htmlparse", handleHTMLParseSubmit)
 	router.GET("/htmlparse/:taskId", handleHTMLParseGet)
 	router.DELETE("/htmlparse/:taskId", handleHTMLParseCancel)
 }
 
-// handleHTMLParseSubmit 提交爬取任务。同一 URL 已有存活任务时返回该 taskId。
+// handleHTMLParseSubmit submits a crawl task. If a live task exists for the same URL, its taskId is returned.
 func handleHTMLParseSubmit(c *gin.Context) {
 	var req htmlParseRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -52,7 +53,7 @@ func handleHTMLParseSubmit(c *gin.Context) {
 	})
 }
 
-// handleHTMLParseGet 查询任务状态与结果。
+// handleHTMLParseGet queries task status and result.
 func handleHTMLParseGet(c *gin.Context) {
 	task, ok := getHTMLCrawlService().Get(c.Param("taskId"))
 	if !ok {
@@ -73,7 +74,7 @@ func handleHTMLParseGet(c *gin.Context) {
 	})
 }
 
-// handleHTMLParseCancel 取消任务；已终态为幂等 no-op。
+// handleHTMLParseCancel cancels a task; idempotent no-op when already terminal.
 func handleHTMLParseCancel(c *gin.Context) {
 	if !getHTMLCrawlService().Cancel(c.Param("taskId")) {
 		c.AbortWithStatusJSON(http.StatusNotFound,
@@ -86,7 +87,7 @@ func handleHTMLParseCancel(c *gin.Context) {
 	response.NoContent(c)
 }
 
-// abortWithDiagnosis 把 DiagnosisException 按其状态码写回，其余按 500 处理。
+// abortWithDiagnosis writes a DiagnosisException back with its status code; everything else becomes 500.
 func abortWithDiagnosis(c *gin.Context, err error) {
 	var de *diagnosis.DiagnosisException
 	if errors.As(err, &de) {

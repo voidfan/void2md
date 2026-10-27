@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// -- 辅助函数 --
+// -- Helpers --
 
 func onlyHeadings(text string) bool {
 	if text == "" {
@@ -34,7 +34,7 @@ func stripTrailingHeadings(text string) string {
 
 // -- ExtractAbstract --
 
-// ExtractAbstract 提取摘要：独立成 chunk(s)，标记 abstractIDs。
+// ExtractAbstract extracts the abstract into its own chunk(s) and marks abstractIDs.
 func ExtractAbstract(ctx *ProcessContext) {
 	text, ids, s, e := FindAbstract(ctx.Elements)
 	ctx.AbstractIDs = ids
@@ -53,7 +53,7 @@ func ExtractAbstract(ctx *ProcessContext) {
 
 // -- handleTitle --
 
-// HandleTitle 处理标题元素。返回需跳过的后续元素数。
+// HandleTitle processes a title element; returns the number of following elements to skip.
 func HandleTitle(ctx *ProcessContext, idx int) int {
 	el := &ctx.Elements[idx]
 	b := ctx.Builder
@@ -75,7 +75,7 @@ func HandleTitle(ctx *ProcessContext, idx int) int {
 		}
 
 		if curLevel <= curTitleLevel {
-			// 同级或更高 → 发射，开新 chunk
+			// same or higher level → emit and start a new chunk
 			if onlyHeadings(b.Text) {
 				orphan := b.Text
 				b.Reset()
@@ -97,13 +97,13 @@ func HandleTitle(ctx *ProcessContext, idx int) int {
 				}
 			}
 		} else {
-			// 更深级子标题 → 合并
+			// deeper sub-heading → merge
 			b.Append(el.Text, el)
 			b.CurrentTitle = el
 			b.CurrentTitleLevel = curLevel
 		}
 	} else {
-		// 空 chunk：起新 chunk + 注入前缀
+		// empty chunk: start new chunk + inject prefix
 		b.CurrentTitle = el
 		b.CurrentTitleLevel = curLevel
 		b.Replace(el.Text, el)
@@ -116,7 +116,7 @@ func HandleTitle(ctx *ProcessContext, idx int) int {
 		}
 	}
 
-	// 向前扫描：合并连续的更深级子标题
+	// scan ahead: merge consecutive deeper sub-headings
 	skip := 0
 	for j := idx + 1; j < len(ctx.Elements); j++ {
 		nxt := ctx.Elements[j]
@@ -146,17 +146,17 @@ func HandleTitle(ctx *ProcessContext, idx int) int {
 
 // -- handleText --
 
-// HandleText 处理文本元素。
+// HandleText processes a text element.
 func HandleText(ctx *ProcessContext, el *Element) {
 	b := ctx.Builder
 	b.Track(el)
 	cs := ctx.ChunkSizes["text"]
 	mergeCS := ctx.MergeBudget("text")
 
-	// 使用 builder 的 CurrentTitle 保持文档层次结构上下文
+	// use the builder's CurrentTitle to keep document hierarchy context
 	currentTitle := b.CurrentTitle
 
-	// 能合并 → 直接追加
+	// fits → append directly
 	if b.Tokens()+TLen(el.Text) <= mergeCS {
 		if b.IsEmpty() {
 			parents := ParentsOf(ctx.Elements, currentTitle)
@@ -169,7 +169,7 @@ func HandleText(ctx *ProcessContext, el *Element) {
 		return
 	}
 
-	// 需要切分 → 构造前缀
+	// needs splitting → build prefix
 	parents := ParentsOf(ctx.Elements, currentTitle)
 	pre := BuildPrefix(ctx, currentTitle, parents, "text")
 	preTok := TLen(pre)
@@ -192,7 +192,7 @@ func HandleText(ctx *ProcessContext, el *Element) {
 		} else {
 			b.Text = stripTrailingHeadings(b.Text)
 			b.Emit(ctx.Sink, el)
-			// 确保新chunk包含标题前缀
+			// ensure the new chunk carries the heading prefix
 			if pre != "" {
 				b.Prepend(pre)
 				b.Append(sentence, el)
@@ -205,7 +205,7 @@ func HandleText(ctx *ProcessContext, el *Element) {
 
 // -- handleCode --
 
-// HandleCode 处理代码块元素。
+// HandleCode processes a code block element.
 func HandleCode(ctx *ProcessContext, el *Element) {
 	b := ctx.Builder
 	b.Track(el)
@@ -214,7 +214,7 @@ func HandleCode(ctx *ProcessContext, el *Element) {
 	cs := ctx.ChunkSizes["code"]
 	mergeCS := ctx.MergeBudget("code")
 
-	// 超限：发射当前 + 切分 + 每片带前缀
+	// over budget: emit current + split + prefix each part
 	if elTok > cs {
 		if !b.IsEmpty() {
 			b.Text = stripTrailingHeadings(b.Text)
@@ -237,13 +237,13 @@ func HandleCode(ctx *ProcessContext, el *Element) {
 		return
 	}
 
-	// 在预算内：能合并就合并
+	// within budget: merge if possible
 	if b.Tokens()+elTok <= mergeCS {
 		b.Append(text, el)
 		return
 	}
 
-	// 装不下 → 发射当前，新 chunk = 前缀 + code
+	// doesn't fit → emit current; new chunk = prefix + code
 	if !b.IsEmpty() {
 		b.Emit(ctx.Sink, nil)
 	}
@@ -259,7 +259,7 @@ func HandleCode(ctx *ProcessContext, el *Element) {
 
 // -- handleFigure --
 
-// HandleFigure 处理图片元素。
+// HandleFigure processes an image element.
 func HandleFigure(ctx *ProcessContext, el *Element) {
 	b := ctx.Builder
 	b.Track(el)
@@ -268,7 +268,7 @@ func HandleFigure(ctx *ProcessContext, el *Element) {
 	image, desc, _ := SplitFigureText(el.Text, ctx.Separator)
 	fullTok := TLen(image) + TLen(desc)
 
-	// 全部能合并到当前 chunk
+	// everything fits into the current chunk
 	if b.Tokens()+fullTok <= mergeCS {
 		if image != "" {
 			b.Append(image, el)
@@ -279,7 +279,7 @@ func HandleFigure(ctx *ProcessContext, el *Element) {
 		return
 	}
 
-	// 装不下 → 发射当前
+	// doesn't fit → emit current
 	if !b.IsEmpty() {
 		b.Emit(ctx.Sink, nil)
 	}
@@ -287,7 +287,7 @@ func HandleFigure(ctx *ProcessContext, el *Element) {
 	parents := ParentsOf(ctx.Elements, b.CurrentTitle)
 	pre := BuildPrefix(ctx, b.CurrentTitle, parents, "figure")
 
-	// 前缀 + 图 + 描述能放下 → 一个 chunk
+	// prefix + image + description fit → one chunk
 	if TLen(pre)+fullTok <= mergeCS {
 		if pre != "" {
 			b.Replace(pre, el)
@@ -310,7 +310,7 @@ func HandleFigure(ctx *ProcessContext, el *Element) {
 		return
 	}
 
-	// 图片优先：先放 prefix + image，描述按句追加
+	// image first: prefix + image, then append description sentence by sentence
 	if pre != "" {
 		b.Replace(pre, el)
 		b.Append(image, el)
@@ -341,8 +341,7 @@ func HandleFigure(ctx *ProcessContext, el *Element) {
 
 // -- handleTable --
 
-// HandleTable 处理表格元素。
-// HandleTable 处理表格元素。
+// HandleTable processes a table element.
 func HandleTable(ctx *ProcessContext, el *Element) {
 	b := ctx.Builder
 	b.Track(el)
@@ -350,7 +349,7 @@ func HandleTable(ctx *ProcessContext, el *Element) {
 	mergeCS := ctx.MergeBudget("table")
 	isHTML := el.Metadata["format"] == "html"
 
-	// --- 格式相关：解析 + 退化处理 ---
+	// --- format-specific: parse + degenerate cases ---
 	var openTag, header string
 	var rows []string
 	var preDesc, postDesc, body string
@@ -367,7 +366,7 @@ func HandleTable(ctx *ProcessContext, el *Element) {
 		}
 	}
 
-	// 使用 builder 的 CurrentTitle 保持文档层次结构上下文
+	// use the builder's CurrentTitle to keep document hierarchy context
 	currentTitle := b.CurrentTitle
 
 	parents := ParentsOf(ctx.Elements, currentTitle)
@@ -398,7 +397,7 @@ func HandleTable(ctx *ProcessContext, el *Element) {
 		}
 	}
 
-	// --- 共同主路径 ---
+	// --- common main path ---
 	wrapFn := func(g []string) string { return "" }
 	var overhead int
 	if isHTML {
@@ -422,7 +421,7 @@ func HandleTable(ctx *ProcessContext, el *Element) {
 
 // -- Dispatch --
 
-// Dispatch 根据元素类型路由到对应 handler，返回 skip 计数。
+// Dispatch routes an element to its handler by type; returns a skip count.
 func Dispatch(ctx *ProcessContext, idx int) int {
 	el := ctx.Elements[idx]
 	if el.Type == "title" {
@@ -443,7 +442,7 @@ func Dispatch(ctx *ProcessContext, idx int) int {
 	return 0
 }
 
-// -- 内部辅助函数 --
+// -- internal helpers --
 
 func filterNonEmpty(ss []string) []string {
 	var out []string

@@ -1,6 +1,6 @@
 package diagnosis
 
-// 外部排障码定义
+// External diagnosis codes
 const (
 	ErrorInvalidArgumentDiagnosisCode        = "0x0000000000000000"
 	ErrorDbDiagnosisCode                     = "0x0000000000000000"
@@ -19,7 +19,7 @@ const (
 	ErrorKnowledgeBaseDatasetCreateErrorCode = "0x0000000000000000"
 	ErrorFileExtractHeaderErrorCode          = "0x0000000000000000"
 
-	// 内部排障码定义
+	// Internal diagnosis codes
 	ErrorWorkingDirDiagnosisCode          = "0x0000000000FF0000"
 	ErrorDbMigrateDiagnosisCode           = "0x0000000000FF0001"
 	ErrorDbInitialDiagnosisCode           = "0x0000000000FF0002"
@@ -36,7 +36,7 @@ const (
 	ErrorTooManyRequestsDiagnosisCode     = "0x0000000000FF000D"
 )
 
-// ClientErrorCode 客户端错误码 400-499
+// ClientErrorCode: 4xx client error codes
 type ClientErrorCode int
 
 const (
@@ -54,7 +54,7 @@ const (
 	ClientCaptchaError        ClientErrorCode = 498
 )
 
-// ServerErrorCode 服务端错误码 500-599
+// ServerErrorCode: 5xx server error codes
 type ServerErrorCode int
 
 const (
@@ -67,7 +67,7 @@ const (
 	ServerDeadlineExceeded ServerErrorCode = 504
 )
 
-// DiagnosisError 标准错误响应体
+// DiagnosisError is the standard error response body.
 type DiagnosisError struct {
 	Code          string      `json:"code"`
 	DiagnosisCode string      `json:"diagnosisCode"`
@@ -75,7 +75,7 @@ type DiagnosisError struct {
 	Data          interface{} `json:"data,omitempty"`
 }
 
-// DiagnosisException 诊断异常，携带完整错误上下文
+// DiagnosisException carries the full error context.
 type DiagnosisException struct {
 	Code       int
 	DCode      string
@@ -85,17 +85,17 @@ type DiagnosisException struct {
 	Data       interface{}
 }
 
-// Error 实现 error 接口
+// Error implements the error interface.
 func (e *DiagnosisException) Error() string {
 	return e.Message
 }
 
-// Unwrap 返回底层的 error
+// Unwrap returns the underlying error.
 func (e *DiagnosisException) Unwrap() error {
 	return e.Err
 }
 
-// NewClientException 创建客户端异常
+// NewClientException creates a client exception.
 func NewClientException(code ClientErrorCode, dcode string, message string) *DiagnosisException {
 	return &DiagnosisException{
 		Code:       int(code),
@@ -105,7 +105,7 @@ func NewClientException(code ClientErrorCode, dcode string, message string) *Dia
 	}
 }
 
-// NewServerException 创建服务端异常
+// NewServerException creates a server exception.
 func NewServerException(code ServerErrorCode, dcode string, message string) *DiagnosisException {
 	return &DiagnosisException{
 		Code:       int(code),
@@ -115,7 +115,7 @@ func NewServerException(code ServerErrorCode, dcode string, message string) *Dia
 	}
 }
 
-// NewAuthException 创建认证异常
+// NewAuthException creates an auth exception.
 func NewAuthException(message string) *DiagnosisException {
 	return &DiagnosisException{
 		Code:       int(ClientUnauthenticated),
@@ -125,7 +125,7 @@ func NewAuthException(message string) *DiagnosisException {
 	}
 }
 
-// NewParseException 创建解析异常
+// NewParseException creates a parse exception.
 func NewParseException(message string, err error) *DiagnosisException {
 	return &DiagnosisException{
 		Code:       int(ServerInternal),
@@ -136,7 +136,7 @@ func NewParseException(message string, err error) *DiagnosisException {
 	}
 }
 
-// NewOCRFailedError 创建 OCR/图片识别失败异常
+// NewOCRFailedError creates an OCR/image-recognition failure.
 func NewOCRFailedError(message string, err error) *DiagnosisException {
 	return &DiagnosisException{
 		Code:       int(ServerInternal),
@@ -147,7 +147,7 @@ func NewOCRFailedError(message string, err error) *DiagnosisException {
 	}
 }
 
-// NewUnsupportedFileTypeError 创建不支持的文件类型异常
+// NewUnsupportedFileTypeError creates an unsupported-file-type error.
 func NewUnsupportedFileTypeError(message string, err error) *DiagnosisException {
 	return &DiagnosisException{
 		Code:       int(ServerInternal),
@@ -158,7 +158,7 @@ func NewUnsupportedFileTypeError(message string, err error) *DiagnosisException 
 	}
 }
 
-// NewInvalidFileError 创建无效文件异常
+// NewInvalidFileError creates an invalid-file error.
 func NewInvalidFileError(message string, err error) *DiagnosisException {
 	return &DiagnosisException{
 		Code:       int(ServerInternal),
@@ -169,7 +169,7 @@ func NewInvalidFileError(message string, err error) *DiagnosisException {
 	}
 }
 
-// NewOfficeConversionError 创建 Office 转换异常
+// NewOfficeConversionError creates an Office-conversion error.
 func NewOfficeConversionError(message string, err error) *DiagnosisException {
 	return &DiagnosisException{
 		Code:       int(ServerInternal),
@@ -180,7 +180,7 @@ func NewOfficeConversionError(message string, err error) *DiagnosisException {
 	}
 }
 
-// NewDocxNotValidError 创建 DOCX 无效异常
+// NewDocxNotValidError creates a DOCX-invalid error.
 func NewDocxNotValidError(message string, err error) *DiagnosisException {
 	return &DiagnosisException{
 		Code:       int(ServerInternal),
@@ -191,7 +191,7 @@ func NewDocxNotValidError(message string, err error) *DiagnosisException {
 	}
 }
 
-// NewDocxConversionError 创建 DOCX 转换异常
+// NewDocxConversionError creates a DOCX-conversion error.
 func NewDocxConversionError(message string, err error) *DiagnosisException {
 	return &DiagnosisException{
 		Code:       int(ServerInternal),
@@ -202,7 +202,7 @@ func NewDocxConversionError(message string, err error) *DiagnosisException {
 	}
 }
 
-// NewAbortedException 创建取消异常
+// NewAbortedException creates an aborted/canceled exception.
 func NewAbortedException(message string) *DiagnosisException {
 	return &DiagnosisException{
 		Code:       int(ClientCancelled),
@@ -212,7 +212,7 @@ func NewAbortedException(message string) *DiagnosisException {
 	}
 }
 
-// NewInvalidArgumentException 创建无效参数异常
+// NewInvalidArgumentException creates an invalid-argument exception.
 func NewInvalidArgumentException(message string) *DiagnosisException {
 	return &DiagnosisException{
 		Code:       int(ClientInvalidArgument),
@@ -222,7 +222,7 @@ func NewInvalidArgumentException(message string) *DiagnosisException {
 	}
 }
 
-// NewTooManyRequestsException 创建请求过多异常（HTTP 429）
+// NewTooManyRequestsException creates a too-many-requests exception (HTTP 429).
 func NewTooManyRequestsException(message string) *DiagnosisException {
 	return &DiagnosisException{
 		Code:       int(ClientResourceExhausted),
@@ -232,7 +232,7 @@ func NewTooManyRequestsException(message string) *DiagnosisException {
 	}
 }
 
-// ToDiagnosisError 将 DiagnosisException 转换为 DiagnosisError 响应体
+// ToDiagnosisError converts a DiagnosisException into a DiagnosisError response body.
 func (e *DiagnosisException) ToDiagnosisError() DiagnosisError {
 	return DiagnosisError{
 		Code:          intToStr(e.Code),
@@ -265,8 +265,8 @@ func intToStr(i int) string {
 	return string(buf[pos:])
 }
 
-// causeText 返回底层错误原因的后缀文本，用于把具体原因拼进错误 Message，
-// 使接口响应能直接向调用方暴露解析失败的根本原因。err 为 nil 时返回空串。
+// causeText returns the cause suffix appended to the error Message so API responses
+// expose the root failure reason; empty when err is nil.
 func causeText(err error) string {
 	if err == nil {
 		return ""

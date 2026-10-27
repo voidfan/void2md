@@ -31,17 +31,17 @@ func TestFetcher_OK(t *testing.T) {
 	if !strings.Contains(string(body), "<p>hi</p>") {
 		t.Errorf("body = %q", body)
 	}
-	// text/html; charset=utf-8 走的是「原样返回」分支，返回体必须仍是合法 UTF-8。
-	// 原文包含性已由上面那条断言覆盖，这里只补编码合法性，不重复断言同一件事。
+	// text/html; charset=utf-8 takes the "return as-is" branch; the body must remain valid UTF-8.
+	// Content inclusion is asserted above; this only adds encoding validity.
 	if !utf8.Valid(body) {
 		t.Errorf("body declared as utf-8 must stay valid UTF-8, got %q", body)
 	}
 }
 
-// TestFetcher_CharsetHintWins HTTP 头声明 gbk 时必须按 gbk 解码，
-// 而不是交给下游再按 <meta> 解一次（那会产出乱码）。
+// TestFetcher_CharsetHintWins: when the HTTP header declares gbk, the body must be
+// decoded as gbk here, not re-decoded downstream per <meta> (which yields mojibake).
 func TestFetcher_CharsetHintWins(t *testing.T) {
-	// 页面正文用 GBK 编码的「中文」，且 <meta> 声称 gbk；HTTP 头也声明 gbk。
+	// Body is GBK-encoded Chinese; <meta> says gbk; HTTP header also says gbk.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=gbk")
 		enc, _ := simplifiedchinese.GBK.NewEncoder().Bytes(
@@ -63,18 +63,20 @@ func TestFetcher_CharsetHintWins(t *testing.T) {
 	}
 }
 
-// TestFetcher_HeaderWinsOverLyingMeta 锁定编码回退链的**优先级**：
-// HTTP 头声明 gbk（真实且可解），页面 <meta> 撒谎说 big5。必须按头解出中文。
+// TestFetcher_HeaderWinsOverLyingMeta pins the **priority** of the encoding fallback chain:
+// HTTP header declares gbk (true and decodable), page <meta> lies with big5.
+// The Chinese text must decode per the header.
 //
-// 这条与 TestFetcher_CharsetHintWins 的区别在于两个声明**互相冲突**——
-// 前者 header 与 meta 都声明 gbk，谁胜出结果都一样，抓不到优先级错误。
-// 而「header 真实、meta 撒谎」正是本功能存在的理由：被 meta 顶掉会导致
-// 整页乱码或报错。（Task 3 复审用一个「可解 hint 被 meta 顶掉」的变异实测过：
-// 那种实现下全包 96 个 case 全绿，只有冲突用例能抓到。）
+// Unlike TestFetcher_CharsetHintWins, the two declarations **conflict** there
+// both say gbk, so either winning gives the same result and priority bugs go
+// undetected. "Header true, meta lying" is the reason this feature exists:
+// letting meta win garbles or breaks the whole page. (A Task 3 review mutation
+// where a decodable hint was overridden by meta stayed green across all 96
+// cases; only this conflict case catches it.)
 func TestFetcher_HeaderWinsOverLyingMeta(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=gbk")
-		// 正文是 GBK 字节，但 meta 谎称 big5
+		// Body is GBK bytes, but meta falsely claims big5
 		enc, _ := simplifiedchinese.GBK.NewEncoder().Bytes(
 			[]byte(`<html><head><meta charset="big5"></head><body><p>中文内容</p></body></html>`))
 		_, _ = w.Write(enc)
@@ -87,15 +89,15 @@ func TestFetcher_HeaderWinsOverLyingMeta(t *testing.T) {
 		t.Fatalf("Fetch error: %v", err)
 	}
 	if !strings.Contains(string(body), "中文内容") {
-		t.Errorf("HTTP 头声明的 gbk 必须优先于撒谎的 <meta charset=\"big5\">，got %q", body)
+		t.Errorf("header-declared gbk must win over the lying <meta charset=\"big5\">, got %q", body)
 	}
 }
 
-// TestFetcher_GBKFallback 覆盖设计 §4.2 第 5 步编码回退链的后两步：
-// HTTP 头与 <meta> 都没声明编码、且字节不是合法 UTF-8 时，按 GBK 兜底。
+// TestFetcher_GBKFallback covers the last two steps of the design §4.2 step 5 fallback chain:
+// when neither header nor <meta> declares a charset and the bytes are not valid UTF-8, fall back to GBK.
 func TestFetcher_GBKFallback(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// 刻意只写 text/html，不带 charset；页面里也没有 <meta charset>
+		// Deliberately plain text/html without charset; the page has no <meta charset> either
 		w.Header().Set("Content-Type", "text/html")
 		enc, _ := simplifiedchinese.GBK.NewEncoder().Bytes(
 			[]byte(`<html><body><p>中文内容</p></body></html>`))
@@ -125,16 +127,16 @@ func TestFetcher_NonHTMLErrors(t *testing.T) {
 		{"pdf", "application/pdf", "is not html"},
 		{"plain", "text/plain", "is not html"},
 		{"json", "application/json", "is not html"},
-		// 空串 Content-Type：mime.ParseMediaType 会报错，isHTMLContentType 因此走到
-		// 「按 ; 切出 media type」的 fallback 分支。这条钉的就是那个分支被执行到。
+		// Empty Content-Type: mime.ParseMediaType errors, so isHTMLContentType takes
+		// the "split media type on ;" fallback branch. This case pins that branch is hit.
 		{"empty", "", "is not html"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if tt.hdr == "" {
-					// 必须真的发一个空串：Content-Type 为空时 net/http 会自行 sniff
-					// （"x" 会被判成 text/plain），那样测的就不是 fallback 分支了。
+					// Must send a real empty string: with no Content-Type, net/http sniffs
+					// ("x" becomes text/plain), which would bypass the fallback branch.
 					w.Header()["Content-Type"] = []string{""}
 				} else {
 					w.Header().Set("Content-Type", tt.hdr)
@@ -155,17 +157,17 @@ func TestFetcher_NonHTMLErrors(t *testing.T) {
 	}
 }
 
-// TestFetcher_AcceptsXHTML 钉住 Fetch 对外声明的契约成对成立：
-// 请求里发的是 Accept: text/html,application/xhtml+xml，isHTMLContentType 就必须同样放行
-// application/xhtml+xml。只认 text/html 的话，XHTML 站点会整站抓取失败。
-// 带与不带 charset 两种写法都要能用（裸的 media type 走另一条 charset 分支）。
+// TestFetcher_AcceptsXHTML pins the paired contract of Fetch: the request sends
+// Accept: text/html,application/xhtml+xml, so isHTMLContentType must equally accept
+// application/xhtml+xml. Accepting only text/html would break fetching whole XHTML sites.
+// Both with and without charset must work (bare media type takes the other charset branch).
 func TestFetcher_AcceptsXHTML(t *testing.T) {
 	const bodyText = `<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml"><body><p>xhtml body</p></body></html>`
 
 	for _, ct := range []string{"application/xhtml+xml", "application/xhtml+xml; charset=utf-8"} {
 		t.Run(ct, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				// 我们对外宣称接受 xhtml，实际实现也必须接受它——两者必须一致。
+				// We advertise accepting xhtml, so the implementation must accept it — the two must match.
 				if accept := r.Header.Get("Accept"); !strings.Contains(accept, "application/xhtml+xml") {
 					t.Errorf("Accept = %q, want it to include application/xhtml+xml", accept)
 				}
@@ -205,23 +207,24 @@ func TestFetcher_StatusAndSizeErrors(t *testing.T) {
 			_, _ = w.Write([]byte(strings.Repeat("a", 5000)))
 		}))
 		defer srv.Close()
-		f := NewFetcher("ua", 5*time.Second, 1024) // 上限 1KB，响应 5KB
+		f := NewFetcher("ua", 5*time.Second, 1024) // limit 1KB, response 5KB
 		_, err := f.Fetch(context.Background(), srv.URL)
 		if err == nil || !strings.Contains(err.Error(), "exceeds") {
 			t.Errorf("error = %v, want size-exceeded", err)
 		}
 	})
 
-	// 边界：响应体**恰好**等于 maxHTMLSize 时必须成功。上面那条 oversize 是 5000 vs 1024，
-	// 钉不住边界——实现写成 `len(body) >= f.maxHTMLSize` 时，刚好达标的页面会被误杀，
-	// 而 oversize 用例照样通过（删掉 `+1` 的 LimitReader 变异同理）。
+	// Boundary: a body **exactly** equal to maxHTMLSize must succeed. The oversize
+	// case above (5000 vs 1024) cannot pin the boundary — with `len(body) >=
+	// f.maxHTMLSize`, an exactly-at-limit page would be wrongly rejected while the
+	// oversize case still passes (same for removing the `+1` in LimitReader).
 	t.Run("exactly at limit", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/html")
 			_, _ = w.Write([]byte(strings.Repeat("a", 1024)))
 		}))
 		defer srv.Close()
-		f := NewFetcher("ua", 5*time.Second, 1024) // 上限 1KB，响应恰好 1KB
+		f := NewFetcher("ua", 5*time.Second, 1024) // limit 1KB, response exactly 1KB
 		body, err := f.Fetch(context.Background(), srv.URL)
 		if err != nil {
 			t.Fatalf("body exactly at maxHTMLSize must be accepted, error = %v", err)
@@ -244,21 +247,24 @@ func TestFetcher_TooManyRedirects(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected redirect error")
 	}
-	// 断言到常量值本身，而不是只断言「与重定向有关」：http.Client 的默认策略
-	// （10 跳）也会返回 "stopped after 10 redirects"，只断言 "redirect" 的话，
-	// 把 CheckRedirect 整个删掉这条测试依然通过——等于没测到 maxRedirects。
+	// Assert the constant value itself, not just "redirect-related": http.Client's
+	// default policy (10 hops) also returns "stopped after 10 redirects", and with
+	// only "redirect" asserted, deleting CheckRedirect entirely still passes —
+	// maxRedirects would go untested.
 	if !strings.Contains(err.Error(), "stopped after 5") {
 		t.Errorf("error = %q, want the cap in maxRedirects (got the default 10?)", err)
 	}
 }
 
-// TestFetcher_RedirectCapBoundary 钉住上限的**边界值本身**：恰好 5 跳必须成功。
+// TestFetcher_RedirectCapBoundary pins the **boundary value** of the cap: exactly 5 hops must succeed.
 //
-// 为什么需要：`CheckRedirect` 的 `via` **含最初那次请求**，所以 `len(via) >= 5`
-// 实际只放行 **4** 跳——与设计 §4.2 第 3 步及常量注释承诺的「最多 5 跳」差一跳。
-// 上面那条 TestFetcher_TooManyRedirects 用的是无限重定向站，4 跳与 5 跳在它眼里
-// 没有区别，所以这个差一在整个测试集里不可见（差一与「整个策略被删掉」都表现为
-// 「会终止」，它只挡得住后者）。
+// Why needed: `via` in `CheckRedirect` **includes the original request**, so
+// `len(via) >= 5` actually allows only **4** hops — one short of the "at most 5"
+// promised in design §4.2 step 3 and the constant's comment.
+// TestFetcher_TooManyRedirects above uses an infinite-redirect site where 4 vs 5
+// hops is indistinguishable, so the off-by-one is invisible across the suite
+// (both it and "policy deleted entirely" surface as "it terminates"; only the
+// latter is caught without this test).
 func TestFetcher_RedirectCapBoundary(t *testing.T) {
 	var srv *httptest.Server
 	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -274,12 +280,12 @@ func TestFetcher_RedirectCapBoundary(t *testing.T) {
 
 	f := NewFetcher("ua", 5*time.Second, 1<<20)
 
-	// 恰好 5 跳：这是设计承诺的上限，必须成功
+	// Exactly 5 hops: the design-promised limit, must succeed
 	if _, err := f.Fetch(context.Background(), srv.URL+"/?n=5"); err != nil {
-		t.Errorf("5 跳重定向必须成功（设计 §4.2 第 3 步的上限），error = %v", err)
+		t.Errorf("5 redirects must succeed (design §4.2 step 3 limit), error = %v", err)
 	}
-	// 6 跳：必须被拒
+	// 6 hops: must be rejected
 	if _, err := f.Fetch(context.Background(), srv.URL+"/?n=6"); err == nil {
-		t.Error("6 跳重定向必须被 maxRedirects 拒绝")
+		t.Error("6 redirects must be rejected by maxRedirects")
 	}
 }

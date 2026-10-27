@@ -4,7 +4,7 @@ import (
 	commoncfg "void2md/common/config"
 )
 
-// ChunkingConfig Markdown 分块模块配置
+// ChunkingConfig is the Markdown chunking module configuration.
 type ChunkingConfig struct {
 	TokenizerPath string
 	ChunkSizes    map[string]int

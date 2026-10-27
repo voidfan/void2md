@@ -13,33 +13,39 @@ import (
 	"void2md/common/logger"
 	dbchandlers "void2md/dbc/handlers"
 	filehandlers "void2md/file/handlers"
+	structuredapi "void2md/structured/handler"
 
 	"github.com/gin-gonic/gin"
 )
 
 func main() {
-	// 1. 加载服务配置并初始化日志
+	// 1. Load service config, init logger
 	cfg := config.LoadConfig()
 	logger.InitLogger(cfg.LogLevel, cfg.LogFormat)
 	log := logger.GetLogger("main")
-	log.Info("配置加载完成", "host", cfg.Host, "port", cfg.Port, "logLevel", cfg.LogLevel)
+	log.Info("config loaded", "host", cfg.Host, "port", cfg.Port, "logLevel", cfg.LogLevel)
 
-	// 2. 创建 Gin Engine 与中间件
+	// 2. Gin engine and middleware
 	if cfg.LogLevel == "debug" || cfg.LogLevel == "DEBUG" {
 		gin.SetMode(gin.DebugMode)
 	} else {
 		gin.SetMode(gin.ReleaseMode)
 	}
 	r := gin.New()
+
+	// Service-level health check, registered before middleware: no auth, for probes/LB.
+	r.Any("/healthz", healthzHandler())
+
 	r.Use(gin.Logger())
 	r.Use(authMiddleware())
 
-	// 3. 挂载模块路由（模块配置已在 import 时由各自包的 init 加载入内存）
-	filehandlers.Mount(r) // file 模块（/v1/*）
-	dbchandlers.Mount(r)  // dbc 模块（/dbc/*）
-	log.Info("模块路由挂载完成", "modules", []string{"file", "dbc"})
+	// 3. Mount module routes (each module loads its config in package init at import)
+	filehandlers.Mount(r)  // file module (/v1/*)
+	dbchandlers.Mount(r)   // dbc module (/v1/dbc/*)
+	structuredapi.Mount(r) // structured module (/v1/data_source/*)
+	log.Info("module routes mounted", "modules", []string{"file", "dbc", "structured"})
 
-	// 4. 启动服务器（优雅关闭）
+	// 4. Start server (graceful shutdown)
 	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
 	srv := &http.Server{
 		Addr:    addr,
@@ -47,9 +53,9 @@ func main() {
 	}
 
 	go func() {
-		log.Info("HTTP 服务启动", "addr", addr)
+		log.Info("http server listening", "addr", addr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Error("HTTP 服务启动失败", "error", err)
+			log.Error("http server failed", "error", err)
 			panic(err)
 		}
 	}()
@@ -57,14 +63,28 @@ func main() {
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-quit
-	log.Info("收到退出信号，正在关闭服务", "signal", sig.String())
+	log.Info("shutdown signal received", "signal", sig.String())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(ctx); err != nil {
-		log.Error("服务关闭异常", "error", err)
+		log.Error("shutdown error", "error", err)
 	}
-	log.Info("服务已安全关闭")
+	log.Info("server stopped gracefully")
+}
+
+// healthzHandler is the service-level health check: GET returns the JSON
+// string "ok" (same body the structured module used to serve); other methods
+// get 405 with an Allow header.
+func healthzHandler() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.Request.Method != http.MethodGet {
+			c.Header("Allow", http.MethodGet)
+			c.JSON(http.StatusMethodNotAllowed, gin.H{"detail": "Method Not Allowed"})
+			return
+		}
+		c.JSON(http.StatusOK, "ok")
+	}
 }
 
 // authMiddleware validates the Authorization header

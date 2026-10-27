@@ -13,15 +13,17 @@ import (
 type Service struct {
 	maxUploadSize          int // limit for /chunk endpoint
 	fileParseMaxUploadSize int // limit for /fileparse endpoint
-	logger                 *slog.Logger
 }
+
+// log returns the module logger lazily so it picks up the handler configured
+// by logger.InitLogger (NewService runs at package init, before main).
+func (s *Service) log() *slog.Logger { return logger.GetLogger("fileparse") }
 
 // NewService creates a new file-parse API service
 func NewService() *Service {
 	return &Service{
 		maxUploadSize:          getMaxUploadSize(),
 		fileParseMaxUploadSize: getFileParseMaxUploadSize(),
-		logger:                 logger.GetLogger("fileparse"),
 	}
 }
 

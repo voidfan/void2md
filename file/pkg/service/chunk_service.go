@@ -7,7 +7,7 @@ import (
 	"void2md/file/pkg/config"
 )
 
-// ChunkResponse chunk 响应
+// ChunkResponse is the chunking response.
 type ChunkResponse struct {
 	Chunks []chunk.Chunk `json:"chunks"`
 	Count  int           `json:"count"`
@@ -18,7 +18,7 @@ var (
 	chunkerInst *chunk.LayoutChunker
 )
 
-// GetChunker 返回单例 LayoutChunker
+// GetChunker returns the singleton LayoutChunker.
 func GetChunker() *chunk.LayoutChunker {
 	chunkerOnce.Do(func() {
 		cfg := config.GetChunkingConfig()
@@ -33,12 +33,12 @@ func GetChunker() *chunk.LayoutChunker {
 	return chunkerInst
 }
 
-// ChunkMarkdown 对 markdown 文本执行分块
+// ChunkMarkdown chunks markdown text.
 func ChunkMarkdown(markdown string, chunkSizes map[string]int) (*ChunkResponse, error) {
 	chunker := GetChunker()
-	// chunkSizes 覆盖：在单例副本上合并，绝不改动共享单例的字段。
-	// 此前直接临时改写 chunker.ChunkSizes 再 defer 还原，并发请求下彼此
-	// 覆盖/恢复，形成数据竞争，还会读到别的请求的配置。
+	// chunkSizes override: merge on a copy of the singleton; never mutate shared fields.
+	// (Temporarily rewriting chunker.ChunkSizes with a deferred restore raced between
+	// concurrent requests, leaking one request's config into another.)
 	if chunkSizes != nil && len(chunkSizes) > 0 {
 		merged := make(map[string]int, len(chunker.ChunkSizes)+len(chunkSizes))
 		for k, v := range chunker.ChunkSizes {

@@ -1,6 +1,4 @@
-// Package config 提供项目级（服务级）配置：监听地址、端口与日志设置，
-// 以及供各模块复用的环境变量读取工具函数。
-// 模块级配置请放在各模块自己的 config 包中（如 file/pkg/config）。
+// Package config
 package config
 
 import (
@@ -10,7 +8,7 @@ import (
 	"sync"
 )
 
-// Config 项目级应用配置
+// Config
 type Config struct {
 	Host      string `json:"host"`
 	Port      int    `json:"port"`
@@ -23,7 +21,7 @@ var (
 	once sync.Once
 )
 
-// LoadConfig 加载项目级配置，使用 sync.Once 保证单例模式
+// LoadConfig
 func LoadConfig() *Config {
 	once.Do(func() {
 		cfg = &Config{}
@@ -39,7 +37,7 @@ func (c *Config) loadFromEnv() {
 	c.LogFormat = GetEnv("VOID2MD_LOG_FORMAT", "plain")
 }
 
-// GetEnv 读取字符串环境变量，未设置时返回默认值
+// GetEnv
 func GetEnv(key, defaultVal string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
@@ -47,7 +45,7 @@ func GetEnv(key, defaultVal string) string {
 	return defaultVal
 }
 
-// GetEnvInt 读取整型环境变量，未设置或非法时返回默认值
+// GetEnvInt
 func GetEnvInt(key string, defaultVal int) int {
 	v := os.Getenv(key)
 	if v == "" {
@@ -60,7 +58,7 @@ func GetEnvInt(key string, defaultVal int) int {
 	return n
 }
 
-// GetEnvFloat64 读取浮点型环境变量，未设置或非法时返回默认值
+// GetEnvFloat64
 func GetEnvFloat64(key string, defaultVal float64) float64 {
 	v := os.Getenv(key)
 	if v == "" {
@@ -73,7 +71,7 @@ func GetEnvFloat64(key string, defaultVal float64) float64 {
 	return n
 }
 
-// GetEnvStringSlice 读取逗号分隔的字符串切片环境变量，未设置或为空时返回默认值
+// GetEnvStringSlice reads a comma-separated list env var; returns the default when unset or empty.
 func GetEnvStringSlice(key string, defaultVal []string) []string {
 	v := os.Getenv(key)
 	if v == "" {

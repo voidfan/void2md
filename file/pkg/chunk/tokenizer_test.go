@@ -11,8 +11,8 @@ func TestCountTokens(t *testing.T) {
 	}{
 		{"", 0},
 		{"Hello world", 3}, // ~2 words + 1 non-ASCII adjustment
-		{"你好世界", 4},     // 4 Chinese characters = 4 tokens
-		{"Hello 世界", 3},   // 1 word + 2 Chinese chars = ~3 tokens
+		{"你好世界", 4},        // 4 Chinese characters = 4 tokens
+		{"Hello 世界", 3},    // 1 word + 2 Chinese chars = ~3 tokens
 	}
 
 	for _, tt := range tests {

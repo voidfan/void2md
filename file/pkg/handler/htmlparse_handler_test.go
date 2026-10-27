@@ -15,7 +15,7 @@ import (
 	htmld "void2md/file/pkg/service/crawl"
 )
 
-// crawlTestSite 起一个两页假站点。
+// crawlTestSite stands up a two-page fake site.
 func crawlTestSite(t *testing.T) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -30,7 +30,7 @@ func crawlTestSite(t *testing.T) *httptest.Server {
 	return srv
 }
 
-// newHTMLParseTestRouter 用测试服务替换全局单例（HardMaxPages=3 的默认测试配置）。
+// newHTMLParseTestRouter replaces the global singleton with a test service (default test config, HardMaxPages=3).
 func newHTMLParseTestRouter(t *testing.T) *gin.Engine {
 	t.Helper()
 	return newHTMLParseTestRouterWithCfg(t, config.HTMLCrawlConfig{
@@ -41,14 +41,15 @@ func newHTMLParseTestRouter(t *testing.T) *gin.Engine {
 	})
 }
 
-// newHTMLParseTestRouterWithCfg 同 newHTMLParseTestRouter，但允许用例自定义配置
-// （例如把 MaxTasks 压到 1，用两步即可触发 429）。
+// newHTMLParseTestRouterWithCfg is like newHTMLParseTestRouter but lets a case
+// customize the config (e.g. MaxTasks down to 1, triggering 429 in two steps).
 func newHTMLParseTestRouterWithCfg(t *testing.T, cfg config.HTMLCrawlConfig) *gin.Engine {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 
-	// 必须在闭包外构造**同一个** service：若在闭包里每次 NewHTMLCrawlService，
-	// 每个请求都会拿到新的 store，POST 建的任务在 GET 时必然 404。
+	// Must construct **one** service outside the closure: NewHTMLCrawlService per
+	// request would give each request a fresh store, so a task created by POST
+	// would always 404 on GET.
 	svc := htmld.NewHTMLCrawlService(cfg)
 	getHTMLCrawlService = func() *htmld.HTMLCrawlService { return svc }
 	t.Cleanup(func() { getHTMLCrawlService = htmld.GetHTMLCrawlService })
@@ -95,7 +96,7 @@ func TestHandleHTMLParse_SubmitAndGet(t *testing.T) {
 		t.Errorf("status = %q, want pending", sub.Status)
 	}
 
-	// 轮询到终态
+	// Poll until terminal
 	deadline := time.Now().Add(10 * time.Second)
 	var got map[string]any
 	for time.Now().Before(deadline) {
@@ -117,7 +118,7 @@ func TestHandleHTMLParse_SubmitAndGet(t *testing.T) {
 	if got["pages"].(float64) != 2 {
 		t.Errorf("pages = %v, want 2", got["pages"])
 	}
-	// 响应字段必须齐全（与 /v1/pdfparse 同构 + items/truncated）
+	// Response fields must be complete (isomorphic to /v1/pdfparse + items/truncated)
 	for _, k := range []string{"status", "pages", "markdown", "items", "truncated", "error"} {
 		if _, ok := got[k]; !ok {
 			t.Errorf("response missing field %q", k)
@@ -125,8 +126,9 @@ func TestHandleHTMLParse_SubmitAndGet(t *testing.T) {
 	}
 }
 
-// TestHandleHTMLParse_NoEscape 复用 JSONNoEscape：markdown 里的 HTML 表格
-// 必须以字面量 < 输出，否则大响应会被转义膨胀（既有 OOM 修复的回归面）。
+// TestHandleHTMLParse_NoEscape reuses JSONNoEscape: HTML tables in the markdown
+// must be output with literal <, else large responses bloat from escaping
+// (regression surface of the existing OOM fix).
 func TestHandleHTMLParse_NoEscape(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
@@ -146,9 +148,9 @@ func TestHandleHTMLParse_NoEscape(t *testing.T) {
 		gw := doJSON(t, r, http.MethodGet, "/v1/htmlparse/"+sub.TaskID, "")
 		body := gw.Body.String()
 		if strings.Contains(body, `"status":"success"`) {
-			// 口径照抄仓库既有写法（internal/handler/chunk_handler_test.go:44-45、
-			// internal/pkg/response/response_test.go）：查**转义序列**而非字面尖括号/与号，
-			// 否则「断言含 <table>」与「断言不含 <」会自相矛盾。
+			// Wording copied from existing repo tests (internal/handler/chunk_handler_test.go:44-45,
+			// internal/pkg/response/response_test.go): check **escape sequences**, not literal
+			// angle brackets/ampersands, else "assert contains <table>" and "assert no <" contradict.
 			if strings.Contains(body, `\u003c`) || strings.Contains(body, `\u0026`) {
 				t.Errorf("response HTML-escaped, got: %q", body)
 			}
@@ -163,14 +165,18 @@ func TestHandleHTMLParse_NoEscape(t *testing.T) {
 }
 
 func TestHandleHTMLParse_ParamErrors(t *testing.T) {
-	// 注意：handler **不做** URL / scheme / maxPage 校验，这些输入会原样传进
-	// svc.Submit，由 Submit 统一返回 FF0003（handler 只负责 JSON 绑定失败时的 400）。
-	// 它们仍然不会真正抓取，但原因不是"没走到 Submit"，而是 **Submit 在创建任务与
-	// 起抓取 goroutine 之前就完成了全部校验**。
+	// Note: the handler does **no** URL / scheme / maxPage validation; these
+	// inputs pass through to svc.Submit, which uniformly returns FF0003 (the
+	// handler only owns the 400 on JSON binding failure). They still never
+	// actually crawl, but the reason is not "Submit isn't reached" — it's that
+	// **Submit completes all validation before creating the task and starting
+	// the crawl goroutine**.
 	//
-	// 因此 URL 用本地站点而不是 https://example.com：后者的"不出网"只依赖 Submit 的
-	// 校验顺序这一条结构性假设，一旦有人把 maxPage 校验挪到 store.submit/`go s.run`
-	// 之后，这些单测就会静默向公网发起真实请求。换成 httptest 本地地址，代价为零。
+	// Hence URLs use a local site, not https://example.com: the latter's
+	// "no outbound traffic" relies on the single structural assumption of
+	// Submit's validation order; if someone moved maxPage validation after
+	// store.submit/`go s.run`, these unit tests would silently issue real
+	// requests to the public internet. httptest local addresses cost nothing.
 	site := crawlTestSite(t)
 	r := newHTMLParseTestRouter(t)
 
@@ -185,13 +191,15 @@ func TestHandleHTMLParse_ParamErrors(t *testing.T) {
 		{"maxPage zero", `{"url":"` + site.URL + `","maxPage":0}`},
 		{"maxPage negative", `{"url":"` + site.URL + `","maxPage":-1}`},
 		{"maxPage wrong type", `{"url":"` + site.URL + `","maxPage":"abc"}`},
-		// 上面那条与下面这条堵的是**不同的**东西，两条都必须留。
-		// 类型错误发生在 maxPage 上时，encoding/json 会把 MaxPage 留成**非 nil 的零值指针**
-		// （实测：err 非空，但 maxPage=non-nil -> 0），于是 Submit 自己的 *maxPage<=0 分支
-		// 照样返回同样的 400+FF0003——把 handler 的 ShouldBindJSON 报错分支整个删掉也测不出来。
-		// 只有「URL 解码正常、而**另一个**字段类型错误」时 MaxPage 才是 nil：不看 err 就会
-		// 拿着一个合法 URL 真的去 Submit 并返回 200（实测变异体下确为 200 + hpa_ taskId）。
-		// 这条是唯一能钉住该分支的输入形状。
+		// The case above and the one below block **different** things; both must stay.
+		// When the type error is on maxPage, encoding/json leaves MaxPage as a
+		// **non-nil zero-value pointer** (verified: err non-empty, but
+		// maxPage=non-nil -> 0), so Submit's own *maxPage<=0 branch returns the
+		// same 400+FF0003 — deleting the handler's ShouldBindJSON error branch
+		// entirely would go undetected. Only when "URL decodes fine but
+		// **another** field has a type error" is MaxPage nil: ignoring err would
+		// really Submit a valid URL and return 200 (verified under the mutant:
+		// 200 + hpa_ taskId). This is the only input shape that pins the branch.
 		{"selector wrong type", `{"url":"` + site.URL + `","selector":123}`},
 		{"invalid json", `{not json`},
 	}
@@ -209,10 +217,11 @@ func TestHandleHTMLParse_ParamErrors(t *testing.T) {
 				t.Fatalf("error response not JSON: %v (%s)", err, w.Body.String())
 			}
 			if e.Message == "" {
-				t.Errorf("error message must be non-empty (设计 §5 要求携带具体原因)")
+				t.Errorf("error message must be non-empty (design §5 requires a specific reason)")
 			}
-			// 只断言 400 是不够的：把 dcode 换成别的，状态码仍是 400，断言照样通过。
-			// 设计 §5 要求参数错误一律 FF0003，下游按 diagnosisCode 分流时依赖它。
+			// Asserting only 400 is not enough: swapping the dcode keeps the
+			// status 400 and the assertion passes. Design §5 requires FF0003 for
+			// all parameter errors; downstream diagnosisCode routing relies on it.
 			if e.DiagnosisCode != diagnosis.ErrorParamCheckDiagnosisCode {
 				t.Errorf("diagnosisCode = %q, want %q", e.DiagnosisCode, diagnosis.ErrorParamCheckDiagnosisCode)
 			}
@@ -220,23 +229,24 @@ func TestHandleHTMLParse_ParamErrors(t *testing.T) {
 	}
 }
 
-// TestHandleHTMLParse_TooManyTasks429 覆盖设计 §5：存活任务数超限 → 429 + FF000D。
+// TestHandleHTMLParse_TooManyTasks429 covers design §5: live task count over limit → 429 + FF000D.
 //
-// 这条用例的价值在于**端到端**走通 handler 的错误映射分支：服务层返回的
-// DiagnosisException 必须经 abortWithDiagnosis 的 errors.As 分支原样写出 429 与 FF000D。
-// Task 10 只在 store 层验过 isTooManyRequests；若 handler 把该错误按 500 兜底，
-// store 层测试全绿而线上响应整个错。
+// The value of this case is walking the handler's error-mapping branch **end to
+// end**: the service layer's DiagnosisException must be written out verbatim as
+// 429 + FF000D via abortWithDiagnosis's errors.As branch. Task 10 only verified
+// isTooManyRequests at the store layer; if the handler fell back to 500 for
+// this error, store tests stay green while the live response is entirely wrong.
 //
-// MaxTasks 压到 1，用两步触发；两个 URL 必须不同，否则去重会把两次 POST 合成一个任务。
+// MaxTasks down to 1, triggered in two steps; the two URLs must differ, else dedup merges the POSTs into one task.
 func TestHandleHTMLParse_TooManyTasks429(t *testing.T) {
 	release := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		<-release // 卡住入口页，任务停在 running → 占用存活名额
+		<-release // stall the entry page so the task stays running → occupies a live slot
 		w.Header().Set("Content-Type", "text/html")
 		_, _ = w.Write([]byte(`<html><body><p>stalled</p></body></html>`))
 	}))
-	// defer 是 LIFO：close(release) 先执行放行被卡住的请求，
-	// srv.Close() 后执行才不会干等到 httptest 超时。
+	// defers are LIFO: close(release) runs first to unblock the stalled request,
+	// then srv.Close() avoids waiting for the httptest timeout.
 	defer srv.Close()
 	defer close(release)
 
@@ -268,14 +278,15 @@ func TestHandleHTMLParse_TooManyTasks429(t *testing.T) {
 	}
 }
 
-// TestHandleHTMLParse_MaxPageClamped 设计 §2.1：超硬上限按 clamp 处理，返回 200 而非 400，
-// 且**钳制必须真的生效**——只断言 200 是空转的：把 clamp 整段删掉，仍然返回 200。
+// TestHandleHTMLParse_MaxPageClamped: design §2.1 — over the hard limit is
+// clamped, returning 200 not 400, and **the clamp must actually take effect**:
+// asserting only 200 is a no-op — deleting the clamp entirely still returns 200.
 //
-// 必须用本地站点：这个用例会真的走 Submit 起一个爬取 goroutine，
-// 若把 URL 写成 https://example.com，单元测试就会向公网发起真实请求
-// （CI 无外网时还会拖到超时）。
-// 站点必须比 router 的 HardMaxPages(=3) 更多页：否则钳不钳制都抓到同样多页，
-// 断言不出区别。
+// Must use a local site: this case really goes through Submit and starts a
+// crawl goroutine; with URL https://example.com the unit test would issue real
+// requests to the public internet (and hang to timeout on CI without egress).
+// The site must have more pages than the router's HardMaxPages(=3): otherwise
+// clamped or not, the same number of pages is fetched and the assertion proves nothing.
 func TestHandleHTMLParse_MaxPageClamped(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
@@ -289,7 +300,7 @@ func TestHandleHTMLParse_MaxPageClamped(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	r := newHTMLParseTestRouter(t) // 该 router 的 HardMaxPages = 3
+	r := newHTMLParseTestRouter(t) // this router's HardMaxPages = 3
 	w := doJSON(t, r, http.MethodPost, "/v1/htmlparse",
 		`{"url":"`+srv.URL+`/","maxPage":99999}`)
 	if w.Code != http.StatusOK {
@@ -302,7 +313,7 @@ func TestHandleHTMLParse_MaxPageClamped(t *testing.T) {
 		t.Fatalf("submit response not JSON: %v (%s)", err, w.Body.String())
 	}
 
-	// 等任务落终态，再断言钳制的结果（POST 只返回 taskId，页数要 GET 才看得到）。
+	// Wait for the terminal state, then assert the clamped result (POST only returns taskId; page count needs GET).
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		gw := doJSON(t, r, http.MethodGet, "/v1/htmlparse/"+sub.TaskID, "")
@@ -317,10 +328,10 @@ func TestHandleHTMLParse_MaxPageClamped(t *testing.T) {
 		switch task.Status {
 		case string(htmld.CrawlSuccess):
 			if task.Pages != 3 {
-				t.Errorf("pages = %d, want 3：maxPage=99999 必须被钳到 HardMaxPages=3", task.Pages)
+				t.Errorf("pages = %d, want 3: maxPage=99999 must be clamped to HardMaxPages=3", task.Pages)
 			}
 			if !task.Truncated {
-				t.Error("truncated = false, want true：被页数上限截断的任务必须置 truncated")
+				t.Error("truncated = false, want true: a task truncated by the page limit must set truncated")
 			}
 			return
 		case string(htmld.CrawlFailed), string(htmld.CrawlCancelled):
@@ -336,11 +347,13 @@ func TestHandleHTMLParse_MaxPageClamped(t *testing.T) {
 func TestHandleHTMLParse_UnknownTask404(t *testing.T) {
 	r := newHTMLParseTestRouter(t)
 
-	// 只断言 404 是不够的：把两处 ErrorNotFoundDiagnosisCode 换成 ErrorUnknownDiagnosisCode
-	// （FF0002 → FF0004），状态码仍是 404，断言照样通过（审计实测：全部测试全绿）。
-	// 设计 §2.2/§2.3 要求未知 taskId 一律 FF0002，下游按 diagnosisCode 分流时会据此
-	// 把「任务不存在」与「未知错误」分开——两者对调用方的处置完全不同（前者等 TTL 或
-	// 改 ID，后者要报障）。本文件对 400 与 429 都断言了 dcode，404 不能例外。
+	// Asserting only 404 is not enough: replacing both ErrorNotFoundDiagnosisCode
+	// with ErrorUnknownDiagnosisCode (FF0002 → FF0004) keeps the status 404 and
+	// the assertion passes (audit verified: all tests green). Design §2.2/§2.3
+	// requires FF0002 for unknown taskId; downstream diagnosisCode routing uses
+	// it to separate "task not found" from "unknown error" — the caller's
+	// handling differs completely (wait for TTL or fix the ID vs report an
+	// incident). This file asserts dcode for 400 and 429; 404 is no exception.
 	for _, tc := range []struct{ name, method string }{
 		{"GET", http.MethodGet},
 		{"DELETE", http.MethodDelete},
@@ -363,23 +376,25 @@ func TestHandleHTMLParse_UnknownTask404(t *testing.T) {
 	}
 }
 
-// TestHandleHTMLParse_Cancel204 设计 §2.3：DELETE 取消**运行中**的任务并清空载荷。
+// TestHandleHTMLParse_Cancel204: design §2.3 — DELETE cancels a **running** task and clears its payload.
 //
-// 必须用**阻塞站点**。若站点能在 DELETE 之前跑完（`crawlTestSite` 只有两页，常常瞬间
-// 完成），DELETE 走的是「终态幂等」分支——按契约它**不修改已有结果**，于是状态是
-// success 而非 cancelled，断言 cancelled 会随机失败。而「取消一个还在跑的任务」才是
-// §2.3 的主路径，也只有阻塞站点能确定性地测到它。
+// Must use a **blocking site**. If the site can finish before the DELETE
+// (`crawlTestSite` has only two pages and often completes instantly), DELETE
+// takes the "terminal idempotent" branch — by contract it **does not modify
+// existing results**, so the status is success, not cancelled, and asserting
+// cancelled fails randomly. "Cancelling a still-running task" is §2.3's main
+// path, and only a blocking site tests it deterministically.
 //
-// 只断言 204 同样不够：把 `cancel` 改成「什么都不做、直接返回 204」也能通过。
+// Asserting only 204 is likewise not enough: making `cancel` "do nothing, return 204" would also pass.
 func TestHandleHTMLParse_Cancel204(t *testing.T) {
 	release := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		<-release // 卡住入口页，任务停在 running
+		<-release // stall the entry page so the task stays running
 		w.Header().Set("Content-Type", "text/html")
 		_, _ = w.Write([]byte(`<html><body><p>stalled</p></body></html>`))
 	}))
-	// defer 是 LIFO：close(release) 先执行放行被卡住的请求，
-	// srv.Close() 后执行才不会干等到 httptest 超时。
+	// defers are LIFO: close(release) runs first to unblock the stalled request,
+	// then srv.Close() avoids waiting for the httptest timeout.
 	defer srv.Close()
 	defer close(release)
 
@@ -407,7 +422,8 @@ func TestHandleHTMLParse_Cancel204(t *testing.T) {
 		t.Errorf("DELETE status = %d, want 204; body=%s", dw.Code, dw.Body.String())
 	}
 
-	// 取消后任务仍在表内（TTL 未到），但必须是 cancelled 且载荷已清空——这才是 §2.3 的承诺。
+	// After cancel the task is still in the table (TTL not reached), but must be
+	// cancelled with its payload cleared — that is §2.3's promise.
 	gw := doJSON(t, r, http.MethodGet, "/v1/htmlparse/"+sub.TaskID, "")
 	if gw.Code != http.StatusOK {
 		t.Fatalf("GET after cancel status = %d, want 200; body=%s", gw.Code, gw.Body.String())
@@ -417,13 +433,14 @@ func TestHandleHTMLParse_Cancel204(t *testing.T) {
 		t.Fatalf("GET response not JSON: %v (%s)", err, gw.Body.String())
 	}
 	if got["status"] != string(htmld.CrawlCancelled) {
-		t.Errorf("status = %v, want %q（取消运行中任务必须落 cancelled）", got["status"], htmld.CrawlCancelled)
+		t.Errorf("status = %v, want %q (cancelling a running task must land on cancelled)", got["status"], htmld.CrawlCancelled)
 	}
 	if md, ok := got["markdown"].(string); !ok || md != "" {
 		t.Errorf("cancelled task must discard markdown, got %v", got["markdown"])
 	}
-	// 注意用 `, ok` 形式断言：直接 `.(float64)` / `.([]interface{})` 在字段缺失时会 panic
-	// （interface {} is nil），把「字段不存在」误报成测试崩溃而不是清晰失败。
+	// Note the `, ok` assertion form: a direct `.(float64)` / `.([]interface{})`
+	// panics on a missing field (interface {} is nil), misreporting "field
+	// absent" as a test crash instead of a clean failure.
 	if items, ok := got["items"].([]interface{}); !ok || len(items) != 0 {
 		t.Errorf("cancelled task must discard items, got %v", got["items"])
 	}
@@ -431,29 +448,30 @@ func TestHandleHTMLParse_Cancel204(t *testing.T) {
 		t.Errorf("cancelled task must reset pages, got %v", got["pages"])
 	}
 
-	// 再次 DELETE 幂等
+	// Second DELETE is idempotent
 	dw2 := doJSON(t, r, http.MethodDelete, "/v1/htmlparse/"+sub.TaskID, "")
 	if dw2.Code != http.StatusNoContent {
 		t.Errorf("second DELETE status = %d, want 204", dw2.Code)
 	}
 }
 
-// TestHandleHTMLParse_SubmitDedupReturnsSameTaskID 设计 §2.1：同一规范化 URL
-// 已有存活任务（pending/running）时直接返回已有 taskId。
+// TestHandleHTMLParse_SubmitDedupReturnsSameTaskID: design §2.1 — when a live
+// task (pending/running) exists for the same normalized URL, the existing taskId is returned.
 //
-// 必须用**阻塞**的站点：若换成即时返回的假站点，两次 POST 之间第一次爬取可能已经
-// 跑完落终态（本测试的配置 HardMaxPages 很小、页面只有几字节），第二次 POST 就会
-// 合法地新建任务、拿到不同 taskId，测试随机失败。
-// 卡住入口页可以保证任务在两次 POST 期间必然处于存活态。
+// Must use a **blocking** site: with an instantly-returning fake site, the
+// first crawl may finish between the two POSTs (this test's HardMaxPages is
+// small and pages are a few bytes), so the second POST would legitimately
+// create a new task with a different taskId and the test fails randomly.
+// Stalling the entry page guarantees the task is live across both POSTs.
 func TestHandleHTMLParse_SubmitDedupReturnsSameTaskID(t *testing.T) {
 	release := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		<-release // 卡住入口页请求，任务停在 running
+		<-release // stall the entry-page request so the task stays running
 		w.Header().Set("Content-Type", "text/html")
 		_, _ = w.Write([]byte(`<html><body><p>stalled</p></body></html>`))
 	}))
-	// defer 是 LIFO：close(release) 先执行放行被卡住的请求，
-	// srv.Close() 后执行才不会干等到 httptest 超时。
+	// defers are LIFO: close(release) runs first to unblock the stalled request,
+	// then srv.Close() avoids waiting for the httptest timeout.
 	defer srv.Close()
 	defer close(release)
 

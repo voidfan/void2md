@@ -5,7 +5,7 @@ services:
       context: .
     network_mode: host
     volumes:
-      # 覆盖容器内 dbc 配置（与 Dockerfile 的 DBC_CONFIG 路径一致）
+      # Overrides the dbc config inside the container (matches DBC_CONFIG in the Dockerfile)
       - ./dbc/config/config.json:/app/dbc/config/config.json:ro
     restart: unless-stopped
 

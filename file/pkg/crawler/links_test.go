@@ -21,9 +21,9 @@ func TestNormalizeURL(t *testing.T) {
 		{"keep non-default port", "https://a.com:8443/p", "https://a.com:8443/p", false},
 		{"reject ftp", "ftp://a.com/p", "", true},
 		{"reject file", "file:///etc/passwd", "", true},
-		// 缺 host 必须报错：POST 阶段「非法输入回 400」的契约依据。
-		// 注意此处不能靠 raw=="" 那条分支兜住——"http:///a" 能成功 Parse 出来，
-		// 只有显式的空 host 校验能拦下它。
+		// Missing host must error: the contract basis for "invalid input → 400" in the POST stage.
+		// The raw=="" branch cannot catch this — "http:///a" parses fine;
+		// only an explicit empty-host check rejects it.
 		{"reject missing host", "http:///a", "", true},
 		{"reject empty", "", "", true},
 	}
@@ -46,7 +46,7 @@ func TestNormalizeURL(t *testing.T) {
 	}
 }
 
-// TestSameHost 覆盖设计 §3.3：基准是 eTLD+1，同域含子域；IP 字面量退化为 host 全等。
+// TestSameHost covers design §3.3: keyed on eTLD+1, subdomains are same-site; IP literals fall back to host equality.
 func TestSameHost(t *testing.T) {
 	tests := []struct {
 		name string
@@ -61,8 +61,9 @@ func TestSameHost(t *testing.T) {
 		{"ip literal equal", "http://127.0.0.1/a", "http://127.0.0.1/b", true},
 		{"ip literal different", "http://127.0.0.1/a", "http://127.0.0.2/b", false},
 		{"ip vs hostname", "http://127.0.0.1/a", "http://localhost/b", false},
-		// IPv6 字面量：stripPort 必须先剥方括号再剥端口，否则 "[::1]" 被切成 "[:"，
-		// 不同地址会被判成同域（爬虫会顺着跨站链接爬到别的机器上）。
+		// IPv6 literal: stripPort must strip brackets before the port, else "[::1]"
+		// becomes "[:" and different addresses compare as same-domain (the crawler
+		// would follow cross-site links to another machine).
 		{"ipv6 equal", "http://[::1]/a", "http://[::1]/b", true},
 		{"ipv6 different", "http://[::1]/a", "http://[::2]/b", false},
 		{"ipv6 port ignored", "http://[::1]:8080/a", "http://[::1]/b", true},
@@ -100,12 +101,12 @@ func TestIsStaticAsset(t *testing.T) {
 	}
 }
 
-// TestExtractLinks 覆盖设计 §4.2 第 10 步的链接提取与过滤。
+// TestExtractLinks covers link extraction and filtering of design §4.2 step 10.
 //
-// 带查询串的链接是「静态资源判定必须看 Path 而不是整串」的判别用例：
-// 判据若写成 abs.String()，"…/img.png?v=2" 的后缀会变成 ".png?v=2"（不入表 → 误入队），
-// 而 "…/download?file=a.png" 的后缀会变成 ".png"（误丢）。
-// 两者方向相反，任何一侧写错都会被下面的长度断言抓住。
+// Links with query strings discriminate "static-asset check must use Path, not
+// the whole string": with abs.String(), "…/img.png?v=2" gets ext ".png?v=2"
+// (not in table → wrongly enqueued) while "…/download?file=a.png" gets ".png"
+// (wrongly dropped). Opposite directions, so either bug is caught by the count assertion below.
 func TestExtractLinks(t *testing.T) {
 	const page = `<html><body>
 		<a href="/a">A</a>
@@ -146,11 +147,11 @@ func TestExtractLinks(t *testing.T) {
 	}
 }
 
-// TestShouldEnqueue 是设计 §4.2 第 11 步「入队过滤」的核心断言：
-// 跨域链接必须被拒绝，同域（含子域）必须被接受，已访问必须被拒绝。
+// TestShouldEnqueue is the core assertion of design §4.2 step 11 (enqueue filter):
+// cross-domain links rejected, same-domain (incl. subdomains) accepted, visited rejected.
 //
-// 这条测试用**纯 URL 单元测试**而非 httptest 集成测试，原因见
-// TestCrawl_CrossDomainNotFollowed 的说明——httptest 起不出真正的跨域站点。
+// This is a pure URL unit test rather than an httptest integration test; see
+// TestCrawl_CrossDomainNotFollowed — httptest cannot stand up a truly cross-domain site.
 func TestShouldEnqueue(t *testing.T) {
 	entry, err := NormalizeURL("https://doc.example.com/docs/")
 	if err != nil {

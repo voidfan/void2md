@@ -74,14 +74,14 @@ func TestNewParseException(t *testing.T) {
 }
 
 func TestNewInvalidFileError_MessageIncludesCause(t *testing.T) {
-	ex := NewInvalidFileError("invalid ofd", errors.New("OFD 文件缺少 OFD.xml"))
+	ex := NewInvalidFileError("invalid ofd", errors.New("OFD file is missing OFD.xml"))
 	if ex.StatusCode != 500 {
 		t.Errorf("expected StatusCode 500, got %d", ex.StatusCode)
 	}
 	if ex.DCode != ErrorInvalidFileDiagnosisCode {
 		t.Errorf("unexpected DCode: %s", ex.DCode)
 	}
-	if ex.Message != "invalid ofd: OFD 文件缺少 OFD.xml" {
+	if ex.Message != "invalid ofd: OFD file is missing OFD.xml" {
 		t.Errorf("unexpected Message %q, want cause appended", ex.Message)
 	}
 }
@@ -116,7 +116,7 @@ func TestNewOCRFailedError(t *testing.T) {
 }
 
 func TestNewServerException_MessageUnchanged(t *testing.T) {
-	// 不带 err 的构造器不拼接 cause，message 保持原样
+	// Constructors without err do not append a cause; the message stays verbatim.
 	ex := NewServerException(ServerInternal, ErrorUnknownDiagnosisCode, "internal error")
 	if ex.Message != "internal error" {
 		t.Errorf("unexpected Message %q, want unchanged", ex.Message)
@@ -248,9 +248,9 @@ func TestServerErrorCode_Values(t *testing.T) {
 	}
 }
 
-// TestNewTooManyRequestsException 覆盖 /v1/htmlparse 存活任务超限时返回 429 的语义。
-// 现有的 ClientResourceExhausted 只是状态码枚举，没有对应的 dcode 与构造函数，
-// 因此这里断言新增的 FF000D。
+// TestNewTooManyRequestsException covers the 429 semantics for exceeding the live
+// /v1/htmlparse task limit; asserts the added FF000D code (ClientResourceExhausted
+// is only a status enum without a dcode/constructor).
 func TestNewTooManyRequestsException(t *testing.T) {
 	e := NewTooManyRequestsException("too many alive tasks")
 
@@ -270,7 +270,7 @@ func TestNewTooManyRequestsException(t *testing.T) {
 		t.Errorf("expected nil Err, got %v", e.Err)
 	}
 
-	// ToDiagnosisError 必须把 dcode 与 message 原样带出
+	// ToDiagnosisError must carry dcode and message through verbatim.
 	body := e.ToDiagnosisError()
 	if body.Code != "429" {
 		t.Errorf("response code = %q, want \"429\"", body.Code)
@@ -283,9 +283,8 @@ func TestNewTooManyRequestsException(t *testing.T) {
 	}
 }
 
-// TestDiagnosisCodes_Unique 确保所有内部诊断码互不重复。
-// 注意不要退回「硬编码既有码列表 + 只比对新码」的形状：那种写法既被
-// 「新码等于字面量 FF000D」的断言完全覆盖，又抓不到将来新增码的撞车。
+// TestDiagnosisCodes_Unique ensures all internal diagnosis codes are unique.
+// Do not regress to a hardcoded known-code list: it misses collisions from future codes.
 func TestDiagnosisCodes_Unique(t *testing.T) {
 	all := map[string]string{
 		"ErrorWorkingDirDiagnosisCode":          ErrorWorkingDirDiagnosisCode,
@@ -306,7 +305,7 @@ func TestDiagnosisCodes_Unique(t *testing.T) {
 	seen := make(map[string]string, len(all))
 	for name, code := range all {
 		if prev, dup := seen[code]; dup {
-			t.Fatalf("诊断码重复: %s 与 %s 都是 %s", name, prev, code)
+			t.Fatalf("duplicate diagnosis code: %s and %s are both %s", name, prev, code)
 		}
 		seen[code] = name
 	}

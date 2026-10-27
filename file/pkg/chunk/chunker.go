@@ -3,9 +3,14 @@ package chunk
 import (
 	"log/slog"
 	"strings"
+
+	"void2md/common/logger"
 )
 
-// DEFAULT_CHUNK_SIZES 默认 chunk size 预算。
+// log returns the module logger lazily (see file/pkg/service/crawl).
+func log() *slog.Logger { return logger.GetLogger("chunk") }
+
+// DEFAULT_CHUNK_SIZES are the default per-type chunk size budgets.
 var DEFAULT_CHUNK_SIZES = map[string]int{
 	"text":   768,
 	"figure": 768,
@@ -13,7 +18,7 @@ var DEFAULT_CHUNK_SIZES = map[string]int{
 	"table":  1536,
 }
 
-// LayoutChunker Markdown 版面规则分块器。
+// LayoutChunker chunks Markdown by layout rules.
 type LayoutChunker struct {
 	TokenizerPath string
 	ChunkSizes    map[string]int
@@ -22,7 +27,7 @@ type LayoutChunker struct {
 	MaxChunkRatio float64
 }
 
-// NewLayoutChunker 创建新的 LayoutChunker。
+// NewLayoutChunker creates a LayoutChunker.
 func NewLayoutChunker(tokenizerPath string, chunkSizes map[string]int, separator string, minRatio, maxRatio float64) *LayoutChunker {
 	merged := make(map[string]int)
 	for k, v := range DEFAULT_CHUNK_SIZES {
@@ -40,15 +45,15 @@ func NewLayoutChunker(tokenizerPath string, chunkSizes map[string]int, separator
 	}
 }
 
-// Chunk 执行完整的版面感知分块流程。
+// Chunk runs the full layout-aware chunking pipeline.
 func (lc *LayoutChunker) Chunk(text string) []Chunk {
 	if strings.TrimSpace(text) == "" {
 		return nil
 	}
 
-	// 1. 初始化 tokenizer（纯 Go fallback 为 no-op）
+	// 1. Init tokenizer (pure-Go fallback is a no-op)
 	if err := InitTokenizer(lc.TokenizerPath); err != nil {
-		slog.Warn("tokenizer init failed, using fallback estimation", "path", lc.TokenizerPath, "error", err)
+		log().Warn("tokenizer init failed, using fallback estimation", "path", lc.TokenizerPath, "error", err)
 	}
 
 	// 2. Parse → Elements
@@ -57,13 +62,13 @@ func (lc *LayoutChunker) Chunk(text string) []Chunk {
 		return nil
 	}
 
-	// 3. 构建 id2idx 映射
+	// 3. Build id2idx map
 	id2idx := make(map[int]int)
 	for i, el := range elements {
 		id2idx[el.ID] = i
 	}
 
-	// 4. 创建上下文
+	// 4. Create context
 	ctx := &ProcessContext{
 		Builder:       &ChunkBuilder{},
 		Sink:          &ChunkSink{},
@@ -75,10 +80,10 @@ func (lc *LayoutChunker) Chunk(text string) []Chunk {
 		AbstractIDs:   make(map[int]bool),
 	}
 
-	// 5. 提取摘要
+	// 5. Extract abstract
 	ExtractAbstract(ctx)
 
-	// 6. 主循环：dispatch 路由
+	// 6. Main loop: dispatch routing
 	for i := 0; i < len(elements); i++ {
 		if ctx.AbstractIDs[elements[i].ID] {
 			continue
@@ -87,16 +92,17 @@ func (lc *LayoutChunker) Chunk(text string) []Chunk {
 		i += skip
 	}
 
-	// 7. 收尾
+	// 7. Flush
 	ctx.Builder.Emit(ctx.Sink, nil)
 
-	// 8. 后处理
+	// 8. Post-process
 	chunks := PostProcess(ctx.Sink.Docs, lc.ChunkSizes, lc.MinChunkRatio, lc.MaxChunkRatio)
 
-	// 9. HTML block 空行规整（对齐 Python chunker._ensure_block_blank_lines）：
-	// table/figure/text 类型的 chunk 可能含结构性 HTML 表格标签或图片（前端会转 <img>），
-	// 与相邻 Markdown 之间缺少空行会导致 CommonMark 把后续内容吞进 HTML block 或加粗
-	// 渲染失败。code 类型跳过：围栏代码块内的 ![](url) 是字面量，不应改动。
+	// 9. HTML block blank-line fixup (matches Python chunker._ensure_block_blank_lines):
+	// table/figure/text chunks may contain structural HTML table tags or images (the
+	// frontend converts them to <img>); a missing blank line next to Markdown makes
+	// CommonMark swallow following content into the HTML block. Skipped for code chunks:
+	// ![](url) inside fenced code is literal.
 	for i := range chunks {
 		if chunks[i].Type != "code" {
 			chunks[i].Text = ensureBlockBlankLines(chunks[i].Text)

@@ -1,0 +1,476 @@
+{
+  "note": "由 tools/oracle/e2e_test.go 在运行期向真实 Python 服务（python -m dative.main）发起请求后落盘，不是手写的期望值。重新生成：go test ./tools/oracle -run TestE2EServiceParity",
+  "cases": [
+    {
+      "name": "root_404",
+      "method": "GET",
+      "path": "/",
+      "status": 404,
+      "headers": {
+        "content-length": "22",
+        "content-type": "application/json",
+        "date": "Thu, 17 Sep 2026 01:51:50 GMT",
+        "server": "uvicorn"
+      },
+      "response_body": "{\"detail\":\"Not Found\"}"
+    },
+    {
+      "name": "unknown_path_404",
+      "method": "POST",
+      "path": "/v1/data_source/nope",
+      "request_body": "{}",
+      "status": 404,
+      "headers": {
+        "content-length": "22",
+        "content-type": "application/json",
+        "date": "Thu, 17 Sep 2026 01:51:50 GMT",
+        "server": "uvicorn"
+      },
+      "response_body": "{\"detail\":\"Not Found\"}"
+    },
+    {
+      "name": "unknown_router_404",
+      "method": "POST",
+      "path": "/v1/nope",
+      "request_body": "{}",
+      "status": 404,
+      "headers": {
+        "content-length": "22",
+        "content-type": "application/json",
+        "date": "Thu, 17 Sep 2026 01:51:50 GMT",
+        "server": "uvicorn"
+      },
+      "response_body": "{\"detail\":\"Not Found\"}"
+    },
+    {
+      "name": "method_not_allowed_405",
+      "method": "GET",
+      "path": "/v1/data_source/sql_format",
+      "status": 405,
+      "headers": {
+        "allow": "POST",
+        "content-length": "31",
+        "content-type": "application/json",
+        "date": "Thu, 17 Sep 2026 01:51:50 GMT",
+        "server": "uvicorn"
+      },
+      "response_body": "{\"detail\":\"Method Not Allowed\"}"
+    },
+    {
+      "name": "trailing_slash_redirect",
+      "method": "POST",
+      "path": "/v1/data_source/sql_format/",
+      "request_body": "{}",
+      "status": 307,
+      "headers": {
+        "content-length": "0",
+        "date": "Thu, 17 Sep 2026 01:51:50 GMT",
+        "location": "http://127.0.0.1:3000/v1/data_source/sql_format",
+        "server": "uvicorn"
+      },
+      "response_body": ""
+    },
+    {
+      "name": "sql_format_mysql_simple",
+      "method": "POST",
+      "path": "/v1/data_source/sql_format",
+      "request_body": "{\"source_config\":{\"type\":\"mysql\",\"host\":\"h\",\"username\":\"u\",\"password\":\"p\",\"db_name\":\"d\"},\"sql\":\"select 1\"}",
+      "status": 200,
+      "headers": {
+        "content-length": "23",
+        "content-type": "application/json",
+        "date": "Thu, 17 Sep 2026 01:51:50 GMT",
+        "server": "uvicorn"
+      },
+      "response_body": "{\"sql\":\"SELECT\\n    1\"}"
+    },
+    {
+      "name": "sql_format_mysql_complex",
+      "method": "POST",
+      "path": "/v1/data_source/sql_format",
+      "request_body": "{\"source_config\":{\"type\":\"mysql\",\"host\":\"h\",\"username\":\"u\",\"password\":\"p\",\"db_name\":\"d\"},\"sql\":\"SELECT a.id, COUNT(*) c FROM `t_a` a JOIN t_b b ON a.id=b.a_id WHERE a.x IN (1,2,3) AND b.y LIKE '%z%' GROUP BY a.id HAVING c\\u003e1 ORDER BY c DESC LIMIT 10\"}",
+      "status": 200,
+      "headers": {
+        "content-length": "219",
+        "content-type": "application/json",
+        "date": "Thu, 17 Sep 2026 01:51:50 GMT",
+        "server": "uvicorn"
+      },
+      "response_body": "{\"sql\":\"SELECT\\n    a.id,\\n    COUNT(*) AS c\\nFROM `t_a` AS a\\nJOIN t_b AS b\\n    ON a.id = b.a_id\\nWHERE\\n    a.x IN (1, 2, 3) AND b.y LIKE '%z%'\\nGROUP BY\\n    a.id\\nHAVING\\n    c > 1\\nORDER BY\\n    c DESC\\nLIMIT 10\"}"
+    },
+    {
+      "name": "sql_format_mysql_case",
+      "method": "POST",
+      "path": "/v1/data_source/sql_format",
+      "request_body": "{\"source_config\":{\"type\":\"mysql\",\"host\":\"h\",\"username\":\"u\",\"password\":\"p\",\"db_name\":\"d\"},\"sql\":\"select upper(name) from users where id = 1\"}",
+      "status": 200,
+      "headers": {
+        "content-length": "64",
+        "content-type": "application/json",
+        "date": "Thu, 17 Sep 2026 01:51:50 GMT",
+        "server": "uvicorn"
+      },
+      "response_body": "{\"sql\":\"SELECT\\n    UPPER(name)\\nFROM users\\nWHERE\\n    id = 1\"}"
+    },
+    {
+      "name": "sql_format_postgres",
+      "method": "POST",
+      "path": "/v1/data_source/sql_format",
+      "request_body": "{\"source_config\":{\"type\":\"postgres\",\"host\":\"h\",\"username\":\"u\",\"password\":\"p\",\"db_name\":\"d\",\"schema\":\"public\"},\"sql\":\"select 1\"}",
+      "status": 200,
+      "headers": {
+        "content-length": "23",
+        "content-type": "application/json",
+        "date": "Thu, 17 Sep 2026 01:51:50 GMT",
+        "server": "uvicorn"
+      },
+      "response_body": "{\"sql\":\"SELECT\\n    1\"}"
+    },
+    {
+      "name": "sql_format_sqlite",
+      "method": "POST",
+      "path": "/v1/data_source/sql_format",
+      "request_body": "{\"source_config\":{\"type\":\"sqlite\",\"db_path\":\"/tmp/x.db\"},\"sql\":\"select 1\"}",
+      "status": 200,
+      "headers": {
+        "content-length": "23",
+        "content-type": "application/json",
+        "date": "Thu, 17 Sep 2026 01:51:50 GMT",
+        "server": "uvicorn"
+      },
+      "response_body": "{\"sql\":\"SELECT\\n    1\"}"
+    },
+    {
+      "name": "sql_format_oracle",
+      "method": "POST",
+      "path": "/v1/data_source/sql_format",
+      "request_body": "{\"source_config\":{\"type\":\"oracle\",\"host\":\"h\",\"username\":\"u\",\"password\":\"p\",\"db_name\":\"XEPDB1\"},\"sql\":\"select 1 from dual\"}",
+      "status": 200,
+      "headers": {
+        "content-length": "34",
+        "content-type": "application/json",
+        "date": "Thu, 17 Sep 2026 01:51:50 GMT",
+        "server": "uvicorn"
+      },
+      "response_body": "{\"sql\":\"SELECT\\n    1\\nFROM dual\"}"
+    },
+    {
+      "name": "sql_format_starrocks",
+      "method": "POST",
+      "path": "/v1/data_source/sql_format",
+      "request_body": "{\"source_config\":{\"type\":\"starrocks\",\"host\":\"h\",\"username\":\"u\",\"password\":\"p\",\"db_name\":\"d\"},\"sql\":\"select 1\"}",
+      "status": 200,
+      "headers": {
+        "content-length": "23",
+        "content-type": "application/json",
+        "date": "Thu, 17 Sep 2026 01:51:50 GMT",
+        "server": "uvicorn"
+      },
+      "response_body": "{\"sql\":\"SELECT\\n    1\"}"
+    },
+    {
+      "name": "sql_format_duckdb",
+      "method": "POST",
+      "path": "/v1/data_source/sql_format",
+      "request_body": "{\"source_config\":{\"type\":\"duckdb\",\"store\":{\"type\":\"local\",\"dir_path\":\"/tmp/x\"}},\"sql\":\"select 1\"}",
+      "status": 200,
+      "headers": {
+        "content-length": "23",
+        "content-type": "application/json",
+        "date": "Thu, 17 Sep 2026 01:51:50 GMT",
+        "server": "uvicorn"
+      },
+      "response_body": "{\"sql\":\"SELECT\\n    1\"}"
+    },
+    {
+      "name": "sql_format_mssql_passthrough",
+      "method": "POST",
+      "path": "/v1/data_source/sql_format",
+      "request_body": "{\"source_config\":{\"type\":\"mssql\",\"host\":\"h\",\"username\":\"u\",\"password\":\"p\",\"db_name\":\"d\"},\"sql\":\"select   1  as x\"}",
+      "status": 200,
+      "headers": {
+        "content-length": "26",
+        "content-type": "application/json",
+        "date": "Thu, 17 Sep 2026 01:51:50 GMT",
+        "server": "uvicorn"
+      },
+      "response_body": "{\"sql\":\"select   1  as x\"}"
+    },
+    {
+      "name": "sql_format_maria_passthrough",
+      "method": "POST",
+      "path": "/v1/data_source/sql_format",
+      "request_body": "{\"source_config\":{\"type\":\"maria\",\"host\":\"h\",\"username\":\"u\",\"password\":\"p\",\"db_name\":\"d\"},\"sql\":\"select   1  as x\"}",
+      "status": 200,
+      "headers": {
+        "content-length": "26",
+        "content-type": "application/json",
+        "date": "Thu, 17 Sep 2026 01:51:50 GMT",
+        "server": "uvicorn"
+      },
+      "response_body": "{\"sql\":\"select   1  as x\"}"
+    },
+    {
+      "name": "sql_format_empty_sql",
+      "method": "POST",
+      "path": "/v1/data_source/sql_format",
+      "request_body": "{\"source_config\":{\"type\":\"mysql\",\"host\":\"h\",\"username\":\"u\",\"password\":\"p\",\"db_name\":\"d\"},\"sql\":\"\"}",
+      "status": 200,
+      "headers": {
+        "content-length": "10",
+        "content-type": "application/json",
+        "date": "Thu, 17 Sep 2026 01:51:50 GMT",
+        "server": "uvicorn"
+      },
+      "response_body": "{\"sql\":\"\"}"
+    },
+    {
+      "name": "sql_format_unparseable",
+      "method": "POST",
+      "path": "/v1/data_source/sql_format",
+      "request_body": "{\"source_config\":{\"type\":\"mysql\",\"host\":\"h\",\"username\":\"u\",\"password\":\"p\",\"db_name\":\"d\"},\"sql\":\"this is not sql\"}",
+      "status": 200,
+      "headers": {
+        "content-length": "27",
+        "content-type": "application/json",
+        "date": "Thu, 17 Sep 2026 01:51:50 GMT",
+        "server": "uvicorn"
+      },
+      "response_body": "{\"sql\":\"NOT this IS `sql`\"}"
+    },
+    {
+      "name": "sql_format_multi_statement",
+      "method": "POST",
+      "path": "/v1/data_source/sql_format",
+      "request_body": "{\"source_config\":{\"type\":\"mysql\",\"host\":\"h\",\"username\":\"u\",\"password\":\"p\",\"db_name\":\"d\"},\"sql\":\"select 1; select 2;\"}",
+      "status": 200,
+      "headers": {
+        "content-length": "40",
+        "content-type": "application/json",
+        "date": "Thu, 17 Sep 2026 01:51:50 GMT",
+        "server": "uvicorn"
+      },
+      "response_body": "{\"sql\":\"SELECT\\n    1\\n\\nSELECT\\n    2\"}"
+    },
+    {
+      "name": "sql_format_parse_error_backtick",
+      "method": "POST",
+      "path": "/v1/data_source/sql_format",
+      "request_body": "{\"source_config\":{\"type\":\"postgres\",\"host\":\"h\",\"username\":\"u\",\"password\":\"p\",\"db_name\":\"d\",\"schema\":\"public\"},\"sql\":\"select `x` from t\"}",
+      "status": 500,
+      "headers": {
+        "content-length": "21",
+        "content-type": "text/plain; charset=utf-8",
+        "date": "Thu, 17 Sep 2026 01:51:50 GMT",
+        "server": "uvicorn"
+      },
+      "response_body": "Internal Server Error"
+    },
+    {
+      "name": "sql_format_parse_error_unmatched_paren",
+      "method": "POST",
+      "path": "/v1/data_source/sql_format",
+      "request_body": "{\"source_config\":{\"type\":\"mysql\",\"host\":\"h\",\"username\":\"u\",\"password\":\"p\",\"db_name\":\"d\"},\"sql\":\"select (1\"}",
+      "status": 500,
+      "headers": {
+        "content-length": "21",
+        "content-type": "text/plain; charset=utf-8",
+        "date": "Thu, 17 Sep 2026 01:51:50 GMT",
+        "server": "uvicorn"
+      },
+      "response_body": "Internal Server Error"
+    },
+    {
+      "name": "sql_format_parse_error_second_stmt",
+      "method": "POST",
+      "path": "/v1/data_source/sql_format",
+      "request_body": "{\"source_config\":{\"type\":\"mysql\",\"host\":\"h\",\"username\":\"u\",\"password\":\"p\",\"db_name\":\"d\"},\"sql\":\"select 1; select (\"}",
+      "status": 500,
+      "headers": {
+        "content-length": "21",
+        "content-type": "text/plain; charset=utf-8",
+        "date": "Thu, 17 Sep 2026 01:51:50 GMT",
+        "server": "uvicorn"
+      },
+      "response_body": "Internal Server Error"
+    },
+    {
+      "name": "validate_empty_body",
+      "method": "POST",
+      "path": "/v1/data_source/sql_format",
+      "status": 422,
+      "headers": {
+        "content-length": "82",
+        "content-type": "application/json",
+        "date": "Thu, 17 Sep 2026 01:51:50 GMT",
+        "server": "uvicorn"
+      },
+      "response_body": "{\"detail\":[{\"type\":\"missing\",\"loc\":[\"body\"],\"msg\":\"Field required\",\"input\":null}]}"
+    },
+    {
+      "name": "validate_invalid_json",
+      "method": "POST",
+      "path": "/v1/data_source/sql_format",
+      "request_body": "{oops",
+      "status": 422,
+      "headers": {
+        "content-length": "158",
+        "content-type": "application/json",
+        "date": "Thu, 17 Sep 2026 01:51:50 GMT",
+        "server": "uvicorn"
+      },
+      "response_body": "{\"detail\":[{\"type\":\"json_invalid\",\"loc\":[\"body\",1],\"msg\":\"JSON decode error\",\"input\":{},\"ctx\":{\"error\":\"Expecting property name enclosed in double quotes\"}}]}"
+    },
+    {
+      "name": "validate_missing_sql",
+      "method": "POST",
+      "path": "/v1/data_source/sql_format",
+      "request_body": "{\"source_config\":{\"type\":\"mysql\",\"host\":\"h\",\"username\":\"u\",\"password\":\"p\",\"db_name\":\"d\"}}",
+      "status": 422,
+      "headers": {
+        "content-length": "173",
+        "content-type": "application/json",
+        "date": "Thu, 17 Sep 2026 01:51:50 GMT",
+        "server": "uvicorn"
+      },
+      "response_body": "{\"detail\":[{\"type\":\"missing\",\"loc\":[\"body\",\"sql\"],\"msg\":\"Field required\",\"input\":{\"source_config\":{\"type\":\"mysql\",\"host\":\"h\",\"username\":\"u\",\"password\":\"p\",\"db_name\":\"d\"}}}]}"
+    },
+    {
+      "name": "validate_missing_source_config",
+      "method": "POST",
+      "path": "/v1/data_source/sql_format",
+      "request_body": "{\"sql\":\"select 1\"}",
+      "status": 422,
+      "headers": {
+        "content-length": "112",
+        "content-type": "application/json",
+        "date": "Thu, 17 Sep 2026 01:51:50 GMT",
+        "server": "uvicorn"
+      },
+      "response_body": "{\"detail\":[{\"type\":\"missing\",\"loc\":[\"body\",\"source_config\"],\"msg\":\"Field required\",\"input\":{\"sql\":\"select 1\"}}]}"
+    },
+    {
+      "name": "validate_bad_discriminator",
+      "method": "POST",
+      "path": "/v1/data_source/sql_format",
+      "request_body": "{\"source_config\":{\"type\":\"nope\"},\"sql\":\"select 1\"}",
+      "status": 422,
+      "headers": {
+        "content-length": "407",
+        "content-type": "application/json",
+        "date": "Thu, 17 Sep 2026 01:51:50 GMT",
+        "server": "uvicorn"
+      },
+      "response_body": "{\"detail\":[{\"type\":\"union_tag_invalid\",\"loc\":[\"body\",\"source_config\"],\"msg\":\"Input tag 'nope' found using 'type' does not match any of the expected tags: 'sqlite', 'mssql', 'mysql', 'maria', 'starrocks', 'oracle', 'postgres', 'duckdb'\",\"input\":{\"type\":\"nope\"},\"ctx\":{\"discriminator\":\"'type'\",\"tag\":\"nope\",\"expected_tags\":\"'sqlite', 'mssql', 'mysql', 'maria', 'starrocks', 'oracle', 'postgres', 'duckdb'\"}}]}"
+    },
+    {
+      "name": "validate_missing_db_name",
+      "method": "POST",
+      "path": "/v1/data_source/sql_format",
+      "request_body": "{\"source_config\":{\"type\":\"mysql\",\"host\":\"h\",\"username\":\"u\",\"password\":\"p\"},\"sql\":\"select 1\"}",
+      "status": 422,
+      "headers": {
+        "content-length": "169",
+        "content-type": "application/json",
+        "date": "Thu, 17 Sep 2026 01:51:50 GMT",
+        "server": "uvicorn"
+      },
+      "response_body": "{\"detail\":[{\"type\":\"missing\",\"loc\":[\"body\",\"source_config\",\"mysql\",\"db_name\"],\"msg\":\"Field required\",\"input\":{\"type\":\"mysql\",\"host\":\"h\",\"username\":\"u\",\"password\":\"p\"}}]}"
+    },
+    {
+      "name": "validate_int_parsing",
+      "method": "POST",
+      "path": "/v1/data_source/sql_format",
+      "request_body": "{\"source_config\":{\"type\":\"mysql\",\"host\":\"h\",\"port\":\"abc\",\"username\":\"u\",\"password\":\"p\",\"db_name\":\"d\"},\"sql\":\"select 1\"}",
+      "status": 422,
+      "headers": {
+        "content-length": "173",
+        "content-type": "application/json",
+        "date": "Thu, 17 Sep 2026 01:51:50 GMT",
+        "server": "uvicorn"
+      },
+      "response_body": "{\"detail\":[{\"type\":\"int_parsing\",\"loc\":[\"body\",\"source_config\",\"mysql\",\"port\"],\"msg\":\"Input should be a valid integer, unable to parse string as an integer\",\"input\":\"abc\"}]}"
+    },
+    {
+      "name": "validate_extra_fields_ignored",
+      "method": "POST",
+      "path": "/v1/data_source/sql_format",
+      "request_body": "{\"source_config\":{\"type\":\"mysql\",\"host\":\"h\",\"username\":\"u\",\"password\":\"p\",\"db_name\":\"d\",\"zzz\":1},\"sql\":\"select 1\",\"extra\":\"x\"}",
+      "status": 200,
+      "headers": {
+        "content-length": "23",
+        "content-type": "application/json",
+        "date": "Thu, 17 Sep 2026 01:51:50 GMT",
+        "server": "uvicorn"
+      },
+      "response_body": "{\"sql\":\"SELECT\\n    1\"}"
+    },
+    {
+      "name": "validate_sql_wrong_type",
+      "method": "POST",
+      "path": "/v1/data_source/sql_format",
+      "request_body": "{\"source_config\":{\"type\":\"mysql\",\"host\":\"h\",\"username\":\"u\",\"password\":\"p\",\"db_name\":\"d\"},\"sql\":123}",
+      "status": 422,
+      "headers": {
+        "content-length": "107",
+        "content-type": "application/json",
+        "date": "Thu, 17 Sep 2026 01:51:50 GMT",
+        "server": "uvicorn"
+      },
+      "response_body": "{\"detail\":[{\"type\":\"string_type\",\"loc\":[\"body\",\"sql\"],\"msg\":\"Input should be a valid string\",\"input\":123}]}"
+    },
+    {
+      "name": "cors_simple_404",
+      "method": "GET",
+      "path": "/nope-nope",
+      "status": 404,
+      "headers": {
+        "access-control-allow-credentials": "true",
+        "access-control-allow-origin": "http://x.test",
+        "content-length": "22",
+        "content-type": "application/json",
+        "date": "Thu, 17 Sep 2026 01:51:50 GMT",
+        "server": "uvicorn",
+        "vary": "Origin"
+      },
+      "response_body": "{\"detail\":\"Not Found\"}"
+    },
+    {
+      "name": "cors_preflight",
+      "method": "OPTIONS",
+      "path": "/v1/data_source/sql_format",
+      "status": 200,
+      "headers": {
+        "access-control-allow-credentials": "true",
+        "access-control-allow-headers": "content-type",
+        "access-control-allow-methods": "DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT",
+        "access-control-allow-origin": "http://x.test",
+        "access-control-max-age": "600",
+        "content-length": "2",
+        "content-type": "text/plain; charset=utf-8",
+        "date": "Thu, 17 Sep 2026 01:51:50 GMT",
+        "server": "uvicorn",
+        "vary": "Origin"
+      },
+      "response_body": "OK"
+    },
+    {
+      "name": "cors_preflight_disallowed_method",
+      "method": "OPTIONS",
+      "path": "/healthz",
+      "status": 400,
+      "headers": {
+        "access-control-allow-credentials": "true",
+        "access-control-allow-methods": "DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT",
+        "access-control-allow-origin": "http://x.test",
+        "access-control-max-age": "600",
+        "content-length": "22",
+        "content-type": "text/plain; charset=utf-8",
+        "date": "Thu, 17 Sep 2026 01:51:50 GMT",
+        "server": "uvicorn",
+        "vary": "Origin"
+      },
+      "response_body": "Disallowed CORS method"
+    }
+  ]
+}

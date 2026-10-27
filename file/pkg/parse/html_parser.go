@@ -10,6 +10,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"void2md/common/logger"
+
 	"golang.org/x/net/html"
 	"golang.org/x/text/encoding"
 	"golang.org/x/text/encoding/charmap"
@@ -21,31 +23,39 @@ import (
 	"golang.org/x/text/transform"
 )
 
-// ParseHTMLBytesToMarkdown 将 HTML 字节数据转换为 Markdown 字符串。
-// 使用 golang.org/x/net/html 解析 DOM 树，递归遍历提取内容。
-// 编码由 <meta charset> 探测决定；调用方若已知 charset（如 HTTP Content-Type），
-// 应改用 ParseHTMLBytesToMarkdownWithCharset 显式传入，避免二次解码。
-// pageCount 为内容长度 / 3000（至少为1）。
+// log returns the module logger lazily (see file/pkg/service/crawl).
+func log() *slog.Logger { return logger.GetLogger("parse") }
+
+// ParseHTMLBytesToMarkdown converts HTML bytes to a Markdown string.
+// Parses the DOM with golang.org/x/net/html and walks it recursively.
+// Encoding is decided by <meta charset> probing; callers who already know the
+// charset (e.g. from HTTP Content-Type) should use
+// ParseHTMLBytesToMarkdownWithCharset instead, to avoid double decoding.
+// pageCount is content length / 3000 (at least 1).
 func ParseHTMLBytesToMarkdown(ctx context.Context, htmlBytes []byte, filename string) (string, int, error) {
 	return ParseHTMLBytesToMarkdownWithCharset(ctx, htmlBytes, filename, "")
 }
 
-// ParseHTMLBytesToMarkdownWithCharset 与 ParseHTMLBytesToMarkdown 行为一致，
-// 但接受调用方提供的 charsetHint（HTTP Content-Type 的 charset 比 <meta charset> 更权威）。
+// ParseHTMLBytesToMarkdownWithCharset behaves like ParseHTMLBytesToMarkdown but
+// accepts a caller-provided charsetHint (the HTTP Content-Type charset is more
+// authoritative than <meta charset>).
 //
-// charsetHint 去空白后非空即视为权威来源：
-//   - "utf-8"（不分大小写，含无短横线别名 utf8、unicode-1-1-utf-8）→ 不做任何解码，
-//     原样使用输入；
-//   - 其它可解的取值 → 按其解码（可解集合见 getCharsetDecoder：简繁中文、日文
-//     Shift-JIS/EUC-JP/ISO-2022-JP、韩文 EUC-KR、西欧 windows-1252）；
-//   - 不可解的取值（如 koi8-r）→ 回退到 <meta charset> 探测：
-//     1. <meta> 也探测不到声明 → 保留该 hint 并按「不可解」报错（错误文本是 hint 的名字）；
-//     2. 探测到的声明仍不可解（如 meta 声称 iso-8859-2）→ 按该声明的名字报错。
-//     两条路调用方都拿到 error，行为等价，仅错误文本不同。
+// A non-blank charsetHint (after trimming) is treated as authoritative:
+//   - "utf-8" (case-insensitive, incl. hyphen-less aliases utf8, unicode-1-1-utf-8)
+//     → no decoding; input used as-is;
+//   - other decodable values → decoded accordingly (decodable set in
+//     getCharsetDecoder: Simplified/Traditional Chinese, Japanese
+//     Shift-JIS/EUC-JP/ISO-2022-JP, Korean EUC-KR, Western windows-1252);
+//   - undecodable values (e.g. koi8-r) → fall back to <meta charset> probing:
+//     1. <meta> declares nothing → keep the hint and report "unsupported"
+//     (error text is the hint's name);
+//     2. the detected declaration is also undecodable (e.g. meta claims
+//     iso-8859-2) → report that declaration's name.
+//     Both paths give the caller an error; behavior is equivalent, only the text differs.
 //
-// charsetHint 为空或全为空白时回退到 <meta charset> 探测。
+// An empty/blank charsetHint falls back to <meta charset> probing.
 //
-// 注意：**空 hint 并不等于「不解码」**——此时仍会按 <meta charset> 解码。
+// Note: **an empty hint does NOT mean "no decoding"** — <meta charset> still applies.
 func ParseHTMLBytesToMarkdownWithCharset(ctx context.Context, htmlBytes []byte, filename, charsetHint string) (string, int, error) {
 	if len(bytes.TrimSpace(htmlBytes)) == 0 {
 		return "", 0, nil
@@ -53,7 +63,7 @@ func ParseHTMLBytesToMarkdownWithCharset(ctx context.Context, htmlBytes []byte, 
 
 	decoded, err := DecodeHTMLBytes(htmlBytes, charsetHint)
 	if err != nil {
-		slog.Warn("html encoding decode failed, using raw bytes", "filename", filename, "error", err)
+		log().Warn("html encoding decode failed, using raw bytes", "filename", filename, "error", err)
 		decoded = htmlBytes
 	}
 
@@ -74,17 +84,20 @@ func ParseHTMLBytesToMarkdownWithCharset(ctx context.Context, htmlBytes []byte, 
 	return result, pageCount, nil
 }
 
-// DecodeHTMLBytes 将 HTML 字节解码为 UTF-8。
-// charsetHint 去空白后非空时优先使用（HTTP Content-Type 比 <meta> 更权威）；
-// hint 不可解时回退到 <meta charset> 探测（见 ParseHTMLBytesToMarkdownWithCharset 的说明）。
+// DecodeHTMLBytes decodes HTML bytes to UTF-8.
+// A non-blank charsetHint wins (HTTP Content-Type is more authoritative than
+// <meta>); an undecodable hint falls back to <meta charset> probing (see
+// ParseHTMLBytesToMarkdownWithCharset).
 func DecodeHTMLBytes(data []byte, charsetHint string) ([]byte, error) {
 	charset := strings.TrimSpace(charsetHint)
 	if charset == "" {
 		charset = detectHTMLCharset(data)
 	} else if !isUTF8Charset(charset) && getCharsetDecoder(charset) == nil {
-		// hint 不可解：不要直接失败，先退到 <meta> 探测——页面自带的声明可能反而
-		// 可解（例如 header 说 koi8-r、meta 说 gbk），直接失败会让整页以乱码收场。
-		// <meta> 也没有可用声明时保留原 hint，仍按「不可解」报错，便于调用方观测。
+		// Undecodable hint: don't fail outright, fall back to <meta> probing —
+		// the page's own declaration may be decodable (e.g. header says koi8-r,
+		// meta says gbk); failing directly would garble the whole page. When
+		// <meta> has no usable declaration either, keep the original hint and
+		// still report "unsupported" for caller observability.
 		if meta := detectHTMLCharset(data); meta != "" {
 			charset = meta
 		}
@@ -102,11 +115,12 @@ func DecodeHTMLBytes(data []byte, charsetHint string) ([]byte, error) {
 	return io.ReadAll(reader)
 }
 
-// isUTF8Charset 判断 charset 取值是否表示 UTF-8。
+// isUTF8Charset reports whether a charset value means UTF-8.
 //
-// 除 "utf-8" 外还接受 WHATWG 的无短横线别名：HTTP 头写 charset=utf8 很常见，
-// 漏掉别名会让本已声明 utf-8 的页面被判为「不可解」，进而回退到 <meta> 被按另一种
-// 编码误解。utf-8 的语义是「原样返回」，所以它不走 getCharsetDecoder，只在这里特判。
+// Besides "utf-8", accepts WHATWG's hyphen-less aliases: charset=utf8 is common
+// in HTTP headers, and missing the alias would mark an already-utf-8-declared
+// page "undecodable", falling back to <meta> and possibly misdecoding. utf-8
+// means "return as-is", so it bypasses getCharsetDecoder and is special-cased here.
 func isUTF8Charset(charset string) bool {
 	switch strings.ToLower(strings.TrimSpace(charset)) {
 	case "utf-8", "utf8", "unicode-1-1-utf-8":
@@ -115,16 +129,16 @@ func isUTF8Charset(charset string) bool {
 	return false
 }
 
-// detectHTMLCharset 从 HTML 中提取 charset 声明。
+// detectHTMLCharset extracts the charset declaration from HTML.
 func detectHTMLCharset(data []byte) string {
 	head := data
 	if len(head) > 4096 {
 		head = head[:4096]
 	}
-	// 严格写法：charset 后必须跟 `=`，取值前允许被引号包裹。
-	// 不要退化成往字符类里加 `'` 的写法（charset[="'\s]+）：它会把
-	// `<p>the charset's value is utf-8</p>` 里的 `'s` 当成取值捕获到 "s"。
-	// 代价是不再支持 `charset"gbk"`（无 `=`）这种从不合法的形式。
+	// Strict form: charset must be followed by `=`; the value may be quoted.
+	// Do not degrade to adding `'` to the character class (charset[="'\s]+):
+	// it would capture "s" from the `'s` in `<p>the charset's value is utf-8</p>`.
+	// Trade-off: `charset"gbk"` (no `=`), never a legal form, is no longer supported.
 	re := regexp.MustCompile(`(?i)charset\s*=\s*["']?\s*([a-zA-Z0-9_-]+)`)
 	matches := re.FindSubmatch(head)
 	if len(matches) >= 2 {
@@ -133,24 +147,27 @@ func detectHTMLCharset(data []byte) string {
 	return ""
 }
 
-// getCharsetDecoder 返回 charset 对应的解码器；取值不可解时返回 nil。
+// getCharsetDecoder returns the decoder for a charset; nil when undecodable.
 //
-// 可解集合（label 按 WHATWG 编码标准收集的**常用** label，**非全集**；统一 ToLower 后匹配）：
-//   - 简体中文：gbk / gb2312 / gb18030；繁体中文：big5；
-//   - 日文：Shift-JIS（shift_jis、cp932、windows-31j…）、EUC-JP、ISO-2022-JP；
-//   - 韩文：EUC-KR；
-//   - 西欧：iso-8859-1 及其别名 → 一律按 windows-1252 解。
+// Decodable set (labels are **common** ones collected per the WHATWG Encoding
+// Standard, **not exhaustive**; matched after ToLower):
+//   - Simplified Chinese: gbk / gb2312 / gb18030; Traditional Chinese: big5;
+//   - Japanese: Shift-JIS (shift_jis, cp932, windows-31j…), EUC-JP, ISO-2022-JP;
+//   - Korean: EUC-KR;
+//   - Western: iso-8859-1 and aliases → always decoded as windows-1252.
 //
-// 两个刻意的取舍：
+// Two deliberate choices:
 //
-//  1. 西欧一律映射到 charmap.Windows1252，而不是 charmap.ISO8859_1。按 WHATWG 编码标准
-//     （也是浏览器的行为），HTTP/HTML 里的 iso-8859-1 label 实际就该按 windows-1252 解，
-//     否则 0x80–0x9F 区间的弯引号等字符会变成 C1 控制符。
-//  2. 不加其它单字节编码（iso-8859-2…iso-8859-16、koi8-r、windows-1251 等）。单字节编码
-//     能解任意字节，一旦进查表，「不可解」这个信号就消失——回退 <meta> 探测的分支和
-//     「meta 也不可解时报错」的观测口径都会失效。
+//  1. Western always maps to charmap.Windows1252, not charmap.ISO8859_1. Per the
+//     WHATWG Encoding Standard (and browser behavior), the iso-8859-1 label in
+//     HTTP/HTML should actually be decoded as windows-1252, else characters in
+//     0x80–0x9F (curly quotes etc.) become C1 control codes.
+//  2. No other single-byte encodings (iso-8859-2…iso-8859-16, koi8-r,
+//     windows-1251, etc.). Single-byte encodings decode any bytes; once in the
+//     table, the "undecodable" signal disappears — both the <meta>-fallback
+//     branch and the "meta also undecodable → error" observability would break.
 //
-// utf-8 不在此列：它的语义是「原样返回」，由 DecodeHTMLBytes 的 isUTF8Charset 特判。
+// utf-8 is not listed: it means "return as-is", special-cased via isUTF8Charset in DecodeHTMLBytes.
 func getCharsetDecoder(charset string) transform.Transformer {
 	switch strings.ToLower(charset) {
 	case "gbk", "gb2312":
@@ -174,7 +191,7 @@ func getCharsetDecoder(charset string) transform.Transformer {
 	return nil
 }
 
-// renderNode 递归渲染 HTML 节点树为 Markdown。
+// renderNode recursively renders an HTML node tree to Markdown.
 func renderNode(buf *bytes.Buffer, n *html.Node) {
 	if n.Type == html.TextNode {
 		text := strings.TrimSpace(n.Data)
@@ -261,7 +278,7 @@ func renderNode(buf *bytes.Buffer, n *html.Node) {
 	}
 }
 
-// renderChildrenInline 渲染子节点为内联文本（不添加块级换行）。
+// renderChildrenInline renders children as inline text (no block-level newlines).
 func renderChildrenInline(buf *bytes.Buffer, n *html.Node) {
 	for c := n.FirstChild; c != nil; c = c.NextSibling {
 		if c.Type == html.TextNode {
@@ -301,7 +318,7 @@ func renderChildrenInline(buf *bytes.Buffer, n *html.Node) {
 	}
 }
 
-// extractText 从节点及其子树提取纯文本。
+// extractText extracts plain text from a node and its subtree.
 func extractText(n *html.Node) string {
 	var buf bytes.Buffer
 	extractTextRecursive(&buf, n)
@@ -318,14 +335,14 @@ func extractTextRecursive(buf *bytes.Buffer, n *html.Node) {
 	}
 }
 
-// extractHTML 从节点及其子树重新序列化为 HTML 字符串。
+// extractHTML re-serializes a node and its subtree to an HTML string.
 func extractHTML(n *html.Node) string {
 	var buf bytes.Buffer
 	html.Render(&buf, n)
 	return buf.String()
 }
 
-// getAttr 获取节点的属性值。
+// getAttr reads a node attribute value.
 func getAttr(n *html.Node, key string) string {
 	for _, attr := range n.Attr {
 		if attr.Key == key {
@@ -335,7 +352,7 @@ func getAttr(n *html.Node, key string) string {
 	return ""
 }
 
-// cleanMarkdown 清理生成的 Markdown 文本，合并多余空行。
+// cleanMarkdown tidies generated Markdown, collapsing excess blank lines.
 var multiNewlineRe = regexp.MustCompile(`\n{3,}`)
 
 func cleanMarkdown(s string) string {
@@ -348,12 +365,14 @@ var _ = encoding.Nop
 var _ = io.ReadAll
 var _ = fmt.Sprintf
 
-// ParseHTMLXLSBytes 解析内容为 HTML 的伪 xls 文件，提取其中的 <table> 原样返回。
-// 对齐 Python excel_parser._parse_html_xls_bytes：
-//   - 编码按 utf-8 → gbk → gb2312 → utf-16 依次尝试（首个成功者），全部失败以 utf-8 兜底；
-//   - 找到的所有 <table> 原样序列化（含嵌套表格，与 BeautifulSoup find_all 行为一致），
-//     以 "\n\n" 拼接；总行数为所有 table 内 <tr> 数量之和；
-//   - 返回 (html_text, 总行数, error)；未找到 <table> 时报错。
+// ParseHTMLXLSBytes parses pseudo-xls files whose content is HTML, extracting
+// <table>s verbatim. Matches the Python excel_parser._parse_html_xls_bytes behavior:
+//   - encodings tried in order utf-8 → gbk → gb2312 → utf-16 (first success);
+//     all failing falls back to utf-8;
+//   - every <table> found is serialized verbatim (incl. nested tables, same as
+//     BeautifulSoup find_all) and joined with "\n\n"; total rows is the sum of
+//     <tr> counts across all tables;
+//   - returns (html_text, total rows, error); errors when no <table> is found.
 func ParseHTMLXLSBytes(ctx context.Context, fileBytes []byte, filename string) (string, int, error) {
 	if len(bytes.TrimSpace(fileBytes)) == 0 {
 		return "", 0, nil
@@ -384,32 +403,32 @@ func ParseHTMLXLSBytes(ctx context.Context, fileBytes []byte, filename string) (
 	walk(doc)
 
 	if len(tables) == 0 {
-		return "", 0, fmt.Errorf("%s 是 HTML 格式但未找到 <table>", filename)
+		return "", 0, fmt.Errorf("%s is HTML format but contains no <table>", filename)
 	}
-	slog.Info("html format xls parsed", "filename", filename, "tables", len(tables), "rows", totalRows)
+	log().Info("html format xls parsed", "filename", filename, "tables", len(tables), "rows", totalRows)
 	return strings.Join(tables, "\n\n"), totalRows, nil
 }
 
-// decodeXLSHTML 按 Python _parse_html_xls_bytes 的编码尝试顺序解码：
-// utf-8 → gbk → gb2312 → utf-16，首个成功者；全部失败返回原始字节（近似 utf-8+replace）。
+// decodeXLSHTML decodes using the Python _parse_html_xls_bytes try order:
+// utf-8 → gbk → gb2312 → utf-16, first success; all failing returns the raw bytes (approximating utf-8+replace).
 func decodeXLSHTML(data []byte) (string, error) {
 	// 1. utf-8
 	if utf8.Valid(data) {
 		return string(data), nil
 	}
-	// 2-3. gbk / gb2312（GB2312 是 GBK 子集，Go 无独立 gb2312 解码器，用 GBK）
+	// 2-3. gbk / gb2312 (GB2312 is a GBK subset; Go has no standalone gb2312 decoder, use GBK)
 	if out, err := decodeWith(data, simplifiedchinese.GBK.NewDecoder()); err == nil {
 		return out, nil
 	}
-	// 4. utf-16（优先 BOM，无 BOM 时按 little-endian）
+	// 4. utf-16 (BOM preferred; little-endian without BOM)
 	if out, err := decodeWith(data, unicode.UTF16(unicode.LittleEndian, unicode.UseBOM).NewDecoder()); err == nil {
 		return out, nil
 	}
-	// 兜底：按 utf-8 保留原始字节（等价 Python decode(errors="replace")）
+	// Fallback: keep raw bytes as utf-8 (equivalent to Python decode(errors="replace"))
 	return string(data), nil
 }
 
-// decodeWith 用指定解码器将字节转为 UTF-8 字符串。
+// decodeWith converts bytes to a UTF-8 string with the given decoder.
 func decodeWith(data []byte, dec transform.Transformer) (string, error) {
 	reader := transform.NewReader(bytes.NewReader(data), dec)
 	out, err := io.ReadAll(reader)
@@ -419,7 +438,7 @@ func decodeWith(data []byte, dec transform.Transformer) (string, error) {
 	return string(out), nil
 }
 
-// countDescendantElements 统计节点子树中指定标签的元素数量（含自身）。
+// countDescendantElements counts elements with the given tag in a node's subtree (incl. itself).
 func countDescendantElements(n *html.Node, tag string) int {
 	count := 0
 	var visit func(m *html.Node)

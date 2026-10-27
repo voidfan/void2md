@@ -16,7 +16,7 @@ import (
 	"void2md/file/pkg/crawler"
 )
 
-// HTMLCrawlStatus 抓取任务状态。
+// HTMLCrawlStatus is the crawl task status.
 type HTMLCrawlStatus string
 
 const (
@@ -27,14 +27,14 @@ const (
 	CrawlCancelled HTMLCrawlStatus = "cancelled"
 )
 
-// HTMLCrawlItem 单页结果。
+// HTMLCrawlItem is a single page result.
 type HTMLCrawlItem struct {
 	URL      string `json:"url"`
 	Title    string `json:"title"`
 	Markdown string `json:"markdown"`
 }
 
-// HTMLCrawlTask 任务对外快照。
+// HTMLCrawlTask is the task's external snapshot.
 type HTMLCrawlTask struct {
 	TaskID    string          `json:"taskId"`
 	Status    HTMLCrawlStatus `json:"status"`
@@ -45,34 +45,36 @@ type HTMLCrawlTask struct {
 	Error     string          `json:"error"`
 }
 
-// htmlCrawlEntry 任务内部条目，含取消函数与终态时间（用于 TTL 清扫）。
+// htmlCrawlEntry is the internal task entry, holding the cancel func and
+// finish time (for TTL sweeping).
 type htmlCrawlEntry struct {
 	task   *HTMLCrawlTask
 	urlKey string
 	cancel context.CancelFunc
-	doneAt time.Time // 零值表示未进入终态
+	doneAt time.Time // zero means not in a terminal state
 	alive  bool
 }
 
-// htmlCrawlStore 内存任务表。
+// htmlCrawlStore is the in-memory task store.
 //
-// 有意不引入后台 goroutine：TTL 清扫在 submit/get 时顺带执行（惰性清扫）。
-// 任务表规模上界为 MaxTasks（存活）+ TTL 窗口内已终态的任务，
-// 对单机内存态方案足够；代价是长期空闲的服务不会主动释放已终态任务。
+// Deliberately no background goroutine: TTL sweeping piggybacks on submit/get (lazy).
+// Size is bounded by MaxTasks (alive) + terminal tasks within the TTL window — enough
+// for a single-node in-memory design; the tradeoff is an idle service won't release
+// terminal tasks proactively.
 type htmlCrawlStore struct {
 	mu    sync.Mutex
 	cfg   config.HTMLCrawlConfig
 	tasks map[string]*htmlCrawlEntry
-	byURL map[string]string // 规范化 URL → 存活任务 ID（去重）
+	byURL map[string]string // normalized URL → alive task ID (dedupe)
 }
 
-// newHTMLCrawlStore 构造内存任务表。
+// newHTMLCrawlStore builds the in-memory task store.
 //
-// cfg 在这里做一次 `Normalize()`，使得 MaxTasks / TaskTTLSeconds **在任务表内部
-// 恒为正数**——于是 submit 的限流与 sweepLocked 的清扫都不必再写 `> 0` 守卫，
-// 也就不会出现「守卫把 0 解释成关掉保护」那种语义（收尾复审 F6）。
-// 归一化放在这里而不只放在 NewHTMLCrawlService，是因为直接构造零值配置
-// （测试、脚本）同样必须落进同一条规则。
+// cfg is Normalize()d here so MaxTasks / TaskTTLSeconds are always positive inside the
+// store — submit's rate limit and sweepLocked need no `> 0` guards, avoiding the
+// "guard reads 0 as protection-off" semantics (review F6). Normalizing here, not only in
+// NewHTMLCrawlService, because directly-constructed zero configs (tests, scripts) must
+// follow the same rule.
 func newHTMLCrawlStore(cfg config.HTMLCrawlConfig) *htmlCrawlStore {
 	return &htmlCrawlStore{
 		cfg:   cfg.Normalize(),
@@ -81,13 +83,13 @@ func newHTMLCrawlStore(cfg config.HTMLCrawlConfig) *htmlCrawlStore {
 	}
 }
 
-// isTooManyRequests 判定错误是否为「存活任务数超限」（429 + FF000D）。
+// isTooManyRequests reports whether err is "too many alive tasks" (429 + FF000D).
 //
-// **必须同时校验诊断码，不能只看 StatusCode**：把 submit 里换成一个
-// StatusCode=429 但 DCode=FF0003 的构造函数，接口响应里的 diagnosisCode 就从
-// FF000D 静默变成 FF0003，而只校验 429 的断言察觉不到——下游按 diagnosisCode
-// 分流时会把「请求过多」误判为「参数错误」。设计 §2.1/§5 新增 FF000D 正是为了
-// 让这个语义可被区分。
+// Must check the diagnosis code, not just StatusCode: a constructor returning
+// StatusCode=429 with DCode=FF0003 would silently change the response diagnosisCode,
+// and 429-only assertions wouldn't notice — downstream routing by diagnosisCode would
+// misread "too many requests" as "invalid param". Design §2.1/§5 added FF000D to make
+// this semantic distinguishable.
 func isTooManyRequests(err error) bool {
 	var de *diagnosis.DiagnosisException
 	return errors.As(err, &de) &&
@@ -95,15 +97,15 @@ func isTooManyRequests(err error) bool {
 		de.DCode == diagnosis.ErrorTooManyRequestsDiagnosisCode
 }
 
-// submit 创建任务。urlKey 为规范化后的 URL（由调用方计算）。
-// 返回 (taskID, 是否命中已有存活任务, error)。
+// submit creates a task. urlKey is the normalized URL (computed by the caller).
+// Returns (taskID, whether an existing alive task was hit, error).
 func (s *htmlCrawlStore) submit(urlKey string, opts crawler.Options) (string, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.sweepLocked()
 
-	// 去重：同 URL 存活任务直接复用（设计 §2.1）
+	// dedupe: reuse an alive task for the same URL (design §2.1)
 	if id, ok := s.byURL[urlKey]; ok {
 		if e, exists := s.tasks[id]; exists && e.alive {
 			return id, true, nil
@@ -111,10 +113,11 @@ func (s *htmlCrawlStore) submit(urlKey string, opts crawler.Options) (string, bo
 		delete(s.byURL, urlKey)
 	}
 
-	// 限流：存活任务数上限（设计 §2.1 → 429 + FF000D）
+	// rate limit: alive task cap (design §2.1 → 429 + FF000D)
 	//
-	// 不再写 `s.cfg.MaxTasks > 0 &&`：cfg 已在构造时 Normalize，该字段恒为正数。
-	// 旧写法把 0/负数解释成「不限任务数」，等于把这道内存保护整个关掉（复审 F6）。
+	// No `s.cfg.MaxTasks > 0 &&` guard: cfg is Normalized at construction, so the field
+	// is always positive. The old form read 0/negative as "unlimited", disabling this
+	// memory protection entirely (review F6).
 	alive := 0
 	for _, e := range s.tasks {
 		if e.alive {
@@ -136,31 +139,32 @@ func (s *htmlCrawlStore) submit(urlKey string, opts crawler.Options) (string, bo
 	return id, false, nil
 }
 
-// setCancel 记录任务的取消函数（供 DELETE 使用）。
+// setCancel registers the task's cancel func (used by DELETE).
 //
-// **这里必须自愈，不能只做「有则赋值」。** Submit 里是 `go s.run(id, opts)`，
-// 而 setCancel 是在 run 内部才调用的：store.submit 返回后任务已对 GET/DELETE
-// 可见，但取消函数要等那个 goroutine 被调度到才登记。在这段窗口内到达的 DELETE
-// 会走 cancel()——它把状态置为 cancelled 并清空载荷，但彼时 e.cancel 仍是 nil，
-// 于是 **ctx 从不被取消**，抓取 goroutine 继续跑到 TaskTimeout（默认 300s），
-// 期间持续出网、持续往内存里堆 Markdown 再丢弃。设计 §2.3 承诺的「pending/running
-// → 取消（ctx cancel）」在这个窗口落空，而客户端拿到的是 204，看不出任何异常。
+// Must self-heal, not just "assign if present". Submit does `go s.run(id, opts)` and
+// setCancel is called inside run: after store.submit returns, the task is already visible
+// to GET/DELETE, but the cancel func is only registered once that goroutine is scheduled.
+// A DELETE arriving in this window goes through cancel() — it sets status cancelled and
+// clears the payload, but e.cancel is still nil, so the ctx is never cancelled: the crawl
+// goroutine keeps running until TaskTimeout (default 300s), fetching and discarding
+// Markdown the whole time. Design §2.3's "pending/running → cancel (ctx cancel)" promise
+// silently fails in this window while the client sees 204.
 //
-// 负载越高（20 个任务并存、P 全忙）这个窗口越宽，所以不是理论问题。
+// The window widens under load (20 concurrent tasks, all Ps busy) — not a theoretical issue.
 func (s *htmlCrawlStore) setCancel(id string, cancel context.CancelFunc) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	e, ok := s.tasks[id]
 	if !ok || !e.alive {
-		// Cancel 先到（任务已 cancelled / 已终态 / 已不存在）：立刻取消 ctx。
-		// 重复 cancel 是幂等的，不会 panic。
+		// Cancel arrived first (task already cancelled / terminal / gone): cancel ctx now.
+		// Repeated cancel is idempotent, no panic.
 		cancel()
 		return
 	}
 	e.cancel = cancel
 }
 
-// setRunning 标记任务开始执行。
+// setRunning marks the task as running.
 func (s *htmlCrawlStore) setRunning(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -169,7 +173,8 @@ func (s *htmlCrawlStore) setRunning(id string) {
 	}
 }
 
-// setProgress 更新运行中的已完成页数（设计 §2.2：非终态时 pages 是唯一进度信号）。
+// setProgress updates the completed page count while running (design §2.2: pages is
+// the only progress signal in non-terminal states).
 func (s *htmlCrawlStore) setProgress(id string, done int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -178,7 +183,7 @@ func (s *htmlCrawlStore) setProgress(id string, done int) {
 	}
 }
 
-// get 返回任务快照的副本。
+// get returns a copy of the task snapshot.
 func (s *htmlCrawlStore) get(id string) (HTMLCrawlTask, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -188,14 +193,14 @@ func (s *htmlCrawlStore) get(id string) (HTMLCrawlTask, bool) {
 		return HTMLCrawlTask{}, false
 	}
 	snap := *e.task
-	// 契约要求 JSON 中 items 始终是数组而非 null（设计 §2.2 响应示例）。
-	// append 到非 nil 空切片上，即使零元素也返回非 nil。
+	// Contract: items is always a JSON array, never null (design §2.2 response example).
+	// Appending onto a non-nil empty slice yields non-nil even with zero elements.
 	snap.Items = append([]HTMLCrawlItem{}, e.task.Items...)
 	return snap, true
 }
 
-// cancel 取消存活任务并清空载荷（设计 §2.3：取消意味着调用方不要了）。
-// 返回 false 表示任务不存在。
+// cancel cancels an alive task and clears its payload (design §2.3: cancel means the
+// caller no longer wants it). Returns false if the task does not exist.
 func (s *htmlCrawlStore) cancel(id string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -204,10 +209,10 @@ func (s *htmlCrawlStore) cancel(id string) bool {
 		return false
 	}
 	if !e.alive {
-		return true // 已终态：幂等，不修改已有结果
+		return true // already terminal: idempotent, don't modify existing results
 	}
 	finishLocked(s, e, CrawlCancelled, "", false)
-	// 取消语义：丢弃已抓页面
+	// cancel semantics: discard fetched pages
 	e.task.Pages = 0
 	e.task.Markdown = ""
 	e.task.Items = []HTMLCrawlItem{}
@@ -217,29 +222,34 @@ func (s *htmlCrawlStore) cancel(id string) bool {
 	return true
 }
 
-// commentSafeURL 让 URL 能安全地放进 `<!-- ... -->` 注释里。
+// commentSafeURL makes a URL safe to embed in an `<!-- ... -->` comment.
 //
-// HTML 注释在**第一处 `-->`** 结束，而 URL 的 query 在归一化（`crawler.NormalizeURL`
-// 只小写 host、去 fragment/默认端口）与 `url.URL.String()` 里都是原样保留的：一条
-// `?x=--><svg/onload=alert(1)>` 形状的同域链接会让注释提前闭合，其后的
-// `<svg/onload=...>` 变成**活的** Markdown/HTML，随聚合 markdown 流向下游
-// （/v1/chunk、知识库），设计 §2.2「注释在 Markdown 渲染时不可见」的承诺也随之失效。
+// HTML comments end at the *first* `-->`, and URL queries are preserved verbatim by both
+// crawler.NormalizeURL (lowercases host, strips fragment/default port) and url.URL.String().
+// A same-origin link shaped like `?x=--><svg/onload=alert(1)>` would close the comment
+// early, turning the following `<svg/onload=...>` into *live* Markdown/HTML that flows
+// downstream (/v1/chunk, knowledge base), breaking design §2.2's "comments are invisible
+// when Markdown renders" promise.
 //
-// 把 `--` 写成 `-%2D` 后串里不再出现 `--`，`-->` 与 `--!>` 都无法形成，且 `-` 与
-// `%2D` 在 URL 里都合法，人仍能读出这是什么地址。只影响注释里的展示：
-// `items[].url` 保持原文，下游要溯源就用它。
+// Rewriting `--` as `-%2D` leaves no `--` in the string, so neither `-->` nor `--!>` can
+// form; both `-` and `%2D` are legal in URLs and the address stays human-readable.
+// Affects comment display only: items[].url keeps the original for downstream provenance.
 func commentSafeURL(u string) string {
 	return strings.ReplaceAll(u, "--", "-%2D")
 }
 
-// finishSuccess 任务成功结束。res.Pages 至少 1 页（由 crawler.Crawl 保证）。
+// finishSuccess completes a task successfully. res.Pages has at least 1 page (guaranteed
+// by crawler.Crawl).
 func (s *htmlCrawlStore) finishSuccess(id string, res *crawler.Result) {
-	// 聚合在**锁外**完成：store 是全局单例、只有一把锁，而这里的拼接是 O(总字节)。
-	// 实测（本机，200MB 载荷 = 200 页 × 1MB，三次）：整个 finishSuccess 0.52 / 0.62 / 0.57s，
-	// 其中锁内只剩赋值——也就是说改成锁外之前，这段时间**全部**是持锁时间，会把
-	// **所有任务**的 GET/POST/DELETE 一起卡住（POST 在请求路径上，无关调用方会莫名变慢）。
-	// 数值随机器与负载浮动，量级是一定的：单次请求可观测地卡住半秒。
-	// res 由抓取 goroutine 独占、不与任何其他写者共享，故「锁外算好、进锁赋值」是安全的。
+	// Aggregation happens *outside* the lock: the store is a global singleton with one
+	// mutex, and this concatenation is O(total bytes). Measured locally (200MB payload =
+	// 200 pages × 1MB, three runs): finishSuccess took 0.52/0.62/0.57s total with only
+	// assignments left inside the lock — before the change, all of that was lock-held time,
+	// stalling GET/POST/DELETE for *every* task (POST is on the request path, so unrelated
+	// callers would slow down inexplicably). Numbers vary by machine; the order of
+	// magnitude doesn't: a single request could observably stall for half a second.
+	// res is owned exclusively by the crawl goroutine, so "compute outside, assign inside"
+	// is safe.
 	items := make([]HTMLCrawlItem, 0, len(res.Pages))
 	var markdown strings.Builder
 	for i, p := range res.Pages {
@@ -247,8 +257,9 @@ func (s *htmlCrawlStore) finishSuccess(id string, res *crawler.Result) {
 		if i > 0 {
 			markdown.WriteString("\n\n\n")
 		}
-		// 注释在 Markdown 渲染时不可见，但让下游分块器切出的 chunk 携带来源 URL。
-		// URL 必须经 commentSafeURL 转义，否则自带 `-->` 的 URL 会提前闭合注释（见该函数）。
+		// Invisible in rendered Markdown, but lets downstream chunker chunks carry the
+		// source URL. The URL must go through commentSafeURL, or a URL containing `-->`
+		// would close the comment early (see that function).
 		markdown.WriteString("<!-- source: " + commentSafeURL(p.URL) + " -->\n\n")
 		markdown.WriteString(p.Markdown)
 	}
@@ -258,7 +269,7 @@ func (s *htmlCrawlStore) finishSuccess(id string, res *crawler.Result) {
 	defer s.mu.Unlock()
 	e, ok := s.tasks[id]
 	if !ok || !e.alive {
-		// 迟到的完成（任务已取消/已过 TTL）：刚算好的载荷直接丢弃，与改动前一致。
+		// Late completion (task cancelled / TTL expired): discard the just-built payload.
 		return
 	}
 	e.task.Markdown = aggregated
@@ -268,7 +279,7 @@ func (s *htmlCrawlStore) finishSuccess(id string, res *crawler.Result) {
 	finishLocked(s, e, status, "", res.Truncated)
 }
 
-// finishFailed 任务失败（抓取到 0 页）。err 的文本会作为 error 字段对外暴露。
+// finishFailed marks a task failed (0 pages fetched). err's text is exposed as the error field.
 func (s *htmlCrawlStore) finishFailed(id string, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -286,7 +297,7 @@ func (s *htmlCrawlStore) finishFailed(id string, err error) {
 	finishLocked(s, e, CrawlFailed, msg, false)
 }
 
-// finishCancelled 任务因 ctx 取消而结束。
+// finishCancelled ends a task due to ctx cancellation.
 func (s *htmlCrawlStore) finishCancelled(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -300,7 +311,7 @@ func (s *htmlCrawlStore) finishCancelled(id string) {
 	finishLocked(s, e, CrawlCancelled, "", false)
 }
 
-// finishLocked 统一处理终态转移（调用方必须已持锁）。
+// finishLocked handles terminal state transitions (caller must hold the lock).
 func finishLocked(s *htmlCrawlStore, e *htmlCrawlEntry, status HTMLCrawlStatus, errMsg string, truncated bool) {
 	e.task.Status = status
 	e.task.Error = errMsg
@@ -310,11 +321,11 @@ func finishLocked(s *htmlCrawlStore, e *htmlCrawlEntry, status HTMLCrawlStatus, 
 	delete(s.byURL, e.urlKey)
 }
 
-// sweepLocked 清理超过 TTL 的终态任务（调用方必须已持锁）。
+// sweepLocked removes terminal tasks older than the TTL (caller must hold the lock).
 //
-// 不写 `if ttl <= 0 { return }`：TaskTTLSeconds 已在构造时 Normalize 成非零，
-// 而旧写法把 0 解释成「永不清扫」——已终态任务的整个载荷（每任务最多 200MB
-// Markdown）会一直留在内存里，且没有任何日志提示（复审 F6）。
+// No `if ttl <= 0 { return }`: TaskTTLSeconds is Normalized to non-zero at construction.
+// The old form read 0 as "never sweep" — terminal tasks' full payloads (up to 200MB
+// Markdown each) would stay in memory forever with no log hint (review F6).
 func (s *htmlCrawlStore) sweepLocked() {
 	ttl := time.Duration(s.cfg.TaskTTLSeconds) * time.Second
 	now := time.Now()
@@ -325,11 +336,12 @@ func (s *htmlCrawlStore) sweepLocked() {
 	}
 }
 
-// newTaskID 生成 16 位十六进制任务 ID，前缀 hpa_。
+// newTaskID generates a 16-hex-digit task ID with the hpa_ prefix.
 func newTaskID() string {
 	var b [8]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		// crypto/rand 失败极罕见；退化为时间戳，避免任务创建直接失败
+		// crypto/rand failure is extremely rare; fall back to a timestamp so task
+		// creation doesn't fail outright
 		return "hpa_" + strconv.FormatInt(time.Now().UnixNano(), 16)
 	}
 	return "hpa_" + hex.EncodeToString(b[:])

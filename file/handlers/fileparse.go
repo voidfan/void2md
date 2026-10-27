@@ -153,7 +153,7 @@ func (s *Service) HandleFileParse(w http.ResponseWriter, r *http.Request) {
 		return
 	case rw := <-ch:
 		if rw.err != nil {
-			s.logger.Error("Conversion error", "error", rw.err)
+			s.log().Error("Conversion error", "error", rw.err)
 			writeFileParseError(w, http.StatusInternalServerError, rw.err.Error())
 			return
 		}

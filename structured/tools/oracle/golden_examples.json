@@ -1,0 +1,82 @@
+{
+  "mysql": {
+    "dialect": "mysql",
+    "string_types": [
+      "CHAR",
+      "LONGTEXT",
+      "MEDIUMTEXT",
+      "TEXT",
+      "TINYTEXT",
+      "VARCHAR"
+    ],
+    "sql": "SELECT 'id' AS name, JSON_ARRAYAGG(id) AS examples FROM (SELECT DISTINCT id FROM users WHERE NOT id IS NULL LIMIT 3) AS t UNION ALL SELECT 'name' AS name, JSON_ARRAYAGG(name) AS examples FROM (SELECT DISTINCT name FROM users WHERE NOT name IS NULL LIMIT 3) AS t UNION ALL SELECT 'city' AS name, JSON_ARRAYAGG(city) AS examples FROM (SELECT DISTINCT city FROM users WHERE NOT city IS NULL LIMIT 3) AS t"
+  },
+  "starrocks": {
+    "dialect": "starrocks",
+    "string_types": [
+      "CHAR",
+      "LONGTEXT",
+      "MEDIUMTEXT",
+      "TEXT",
+      "TINYTEXT",
+      "VARCHAR"
+    ],
+    "sql": "\nSELECT\n    'id' AS name,\n    CONCAT('[', GROUP_CONCAT(CONCAT('\"' , REPLACE(id, '\"', '\\\\\"'),'\"')), ']') AS examples\nFROM (\n    SELECT DISTINCT `id`\n    FROM `users`\n    WHERE `id` IS NOT NULL\n    LIMIT 3\n) AS t\n\nUNION ALL\n\nSELECT\n    'name' AS name,\n    CONCAT('[', GROUP_CONCAT(CONCAT('\"' , REPLACE(name, '\"', '\\\\\"'),'\"')), ']') AS examples\nFROM (\n    SELECT DISTINCT `name`\n    FROM `users`\n    WHERE `name` IS NOT NULL\n    LIMIT 3\n) AS t\n\nUNION ALL\n\nSELECT\n    'city' AS name,\n    CONCAT('[', GROUP_CONCAT(CONCAT('\"' , REPLACE(city, '\"', '\\\\\"'),'\"')), ']') AS examples\nFROM (\n    SELECT DISTINCT `city`\n    FROM `users`\n    WHERE `city` IS NOT NULL\n    LIMIT 3\n) AS t\n"
+  },
+  "postgres": {
+    "dialect": "postgres",
+    "string_types": [
+      "CHAR",
+      "CHARACTER",
+      "CHARACTER VARYING",
+      "TEXT",
+      "VARCHAR"
+    ],
+    "sql": "SELECT 'id' AS name, JSON_AGG(id) AS examples FROM (SELECT DISTINCT id FROM users WHERE NOT id IS NULL LIMIT 3) AS t UNION ALL SELECT 'name' AS name, JSON_AGG(name) AS examples FROM (SELECT DISTINCT name FROM users WHERE NOT name IS NULL LIMIT 3) AS t UNION ALL SELECT 'city' AS name, JSON_AGG(city) AS examples FROM (SELECT DISTINCT city FROM users WHERE NOT city IS NULL LIMIT 3) AS t"
+  },
+  "sqlite": {
+    "dialect": "sqlite",
+    "string_types": [
+      "TEXT"
+    ],
+    "sql": "SELECT 'id' AS name, JSON_GROUP_ARRAY(id) AS examples FROM (SELECT DISTINCT id FROM users WHERE NOT id IS NULL LIMIT 3) AS t UNION ALL SELECT 'name' AS name, JSON_GROUP_ARRAY(name) AS examples FROM (SELECT DISTINCT name FROM users WHERE NOT name IS NULL LIMIT 3) AS t UNION ALL SELECT 'city' AS name, JSON_GROUP_ARRAY(city) AS examples FROM (SELECT DISTINCT city FROM users WHERE NOT city IS NULL LIMIT 3) AS t"
+  },
+  "oracle": {
+    "dialect": "oracle",
+    "string_types": [
+      "CHAR",
+      "CLOB",
+      "NCHAR",
+      "NCLOB",
+      "NVARCHAR",
+      "NVARCHAR2",
+      "VARCHAR",
+      "VARCHAR2"
+    ],
+    "sql": "SELECT 'id' AS name, JSON_ARRAYAGG(id) AS examples FROM (SELECT DISTINCT id FROM users WHERE NOT id IS NULL FETCH FIRST 3 ROWS ONLY) t UNION ALL SELECT 'name' AS name, JSON_ARRAYAGG(name) AS examples FROM (SELECT DISTINCT name FROM users WHERE NOT name IS NULL FETCH FIRST 3 ROWS ONLY) t UNION ALL SELECT 'city' AS name, JSON_ARRAYAGG(city) AS examples FROM (SELECT DISTINCT city FROM users WHERE NOT city IS NULL FETCH FIRST 3 ROWS ONLY) t"
+  },
+  "mssql": {
+    "dialect": "mssql",
+    "string_types": [
+      "char",
+      "nchar",
+      "ntext",
+      "nvarchar",
+      "text",
+      "varchar"
+    ],
+    "sql": "\nSELECT\n    'id' as name,\n    CONCAT(\n        '[',\n        STRING_AGG(\n            CONCAT('\"', REPLACE([id], '\"', '\\\"'), '\"'),\n            ','\n        ),\n        ']'\n    ) AS examples\nFROM (\n    SELECT DISTINCT top 3 [id]\n    FROM [users]\n    WHERE [id] IS NOT NULL\n) AS t\n\nUNION ALL\n\nSELECT\n    'name' as name,\n    CONCAT(\n        '[',\n        STRING_AGG(\n            CONCAT('\"', REPLACE([name], '\"', '\\\"'), '\"'),\n            ','\n        ),\n        ']'\n    ) AS examples\nFROM (\n    SELECT DISTINCT top 3 [name]\n    FROM [users]\n    WHERE [name] IS NOT NULL\n) AS t\n\nUNION ALL\n\nSELECT\n    'city' as name,\n    CONCAT(\n        '[',\n        STRING_AGG(\n            CONCAT('\"', REPLACE([city], '\"', '\\\"'), '\"'),\n            ','\n        ),\n        ']'\n    ) AS examples\nFROM (\n    SELECT DISTINCT top 3 [city]\n    FROM [users]\n    WHERE [city] IS NOT NULL\n) AS t\n"
+  },
+  "duckdb": {
+    "dialect": "duckdb",
+    "string_types": [
+      "BPCHAR",
+      "CHAR",
+      "STRING",
+      "TEXT",
+      "VARCHAR"
+    ],
+    "sql": "SELECT 'id' AS name, JSON_GROUP_ARRAY(id) AS examples FROM (SELECT DISTINCT id FROM users WHERE NOT id IS NULL LIMIT 3) AS t UNION ALL SELECT 'name' AS name, JSON_GROUP_ARRAY(name) AS examples FROM (SELECT DISTINCT name FROM users WHERE NOT name IS NULL LIMIT 3) AS t UNION ALL SELECT 'city' AS name, JSON_GROUP_ARRAY(city) AS examples FROM (SELECT DISTINCT city FROM users WHERE NOT city IS NULL LIMIT 3) AS t"
+  },
+  "_meta_db_name": "mydb"
+}

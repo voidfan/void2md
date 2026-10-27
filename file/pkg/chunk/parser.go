@@ -5,14 +5,14 @@ import (
 	"strings"
 )
 
-// Parse 完整解析：行扫描 → 父子关系 → caption 合并。
+// Parse runs the full parse: line scan → parent links → caption merge.
 func Parse(text string, separator string) []Element {
 	elements := parseLines(text)
 	attachParents(elements)
 	return mergeCaptions(elements, separator)
 }
 
-// -- 阶段 1-5: 逐行扫描 --
+// -- Phases 1-5: line scan --
 
 func parseLines(text string) []Element {
 	lines := strings.Split(text, "\n")
@@ -30,7 +30,7 @@ func parseLines(text string) []Element {
 			continue
 		}
 
-		// 跟踪 <pre>/<code> 裸标签
+		// track bare <pre>/<code> tags
 		if preCodeOpenPattern.MatchString(stripped) {
 			if !preCodeClosePattern.MatchString(stripped) {
 				inPreCode = true
@@ -40,7 +40,7 @@ func parseLines(text string) []Element {
 			inPreCode = false
 		}
 
-		// 1. 围栏代码块
+		// 1. Fenced code block
 		if m := CODE_FENCE_PATTERN.FindStringSubmatch(stripped); m != nil {
 			fence := m[1]
 			lang := ""
@@ -73,7 +73,7 @@ func parseLines(text string) []Element {
 			continue
 		}
 
-		// 2. HTML 表格（允许跨行）
+		// 2. HTML table (may span lines)
 		commentFree := stripHTMLNoise(stripped)
 		if !inPreCode && HTML_TABLE_OPEN.MatchString(commentFree) {
 			start := i
@@ -102,7 +102,7 @@ func parseLines(text string) []Element {
 			continue
 		}
 
-		// 3. 标题检测
+		// 3. Heading detection
 		if m := HEADING_PATTERN.FindStringSubmatch(stripped); m != nil {
 			level := len(m[1])
 			titleText := strings.TrimSpace(m[2])
@@ -119,7 +119,7 @@ func parseLines(text string) []Element {
 			continue
 		}
 
-		// Setext 风格标题
+		// Setext-style heading
 		if i+1 < len(lines) && setextLine.MatchString(strings.TrimSpace(lines[i+1])) {
 			nextLine := strings.TrimSpace(lines[i+1])
 			level := 1
@@ -139,7 +139,7 @@ func parseLines(text string) []Element {
 			continue
 		}
 
-		// 4. Markdown 表格（管道行 + 下一行是分隔行）
+		// 4. Markdown table (pipe row + divider row next)
 		if MD_TABLE_ROW.MatchString(stripped) && i+1 < len(lines) && MD_TABLE_DIVIDER.MatchString(strings.TrimSpace(lines[i+1])) {
 			start := i
 			var rows []string
@@ -159,7 +159,7 @@ func parseLines(text string) []Element {
 			continue
 		}
 
-		// 5. 段落（Figure / Text）
+		// 5. Paragraph (Figure / Text)
 		start := i
 		var para []string
 		for i < len(lines) {
@@ -186,7 +186,7 @@ func parseLines(text string) []Element {
 
 		paraText := strings.Join(para, "\n")
 		eid++
-		// 纯图片段落 → Figure（去掉所有 ![]() 后无非空字符）
+		// pure-image paragraph → Figure (no non-space chars left after removing ![]())
 		if IMAGE_PATTERN.MatchString(paraText) && !paraNonSpaceImageChars.MatchString(IMAGE_PATTERN.ReplaceAllString(paraText, "")) {
 			elements = append(elements, Element{
 				ID:        eid,
@@ -211,7 +211,7 @@ func parseLines(text string) []Element {
 	return elements
 }
 
-// -- 阶段: 父子关系构建 --
+// -- Phase: parent-child linking --
 
 func attachParents(elements []Element) {
 	type stackEntry struct {
@@ -248,7 +248,7 @@ func attachParents(elements []Element) {
 		}
 	}
 
-	// 非标题元素的 level 从父标题继承
+	// non-title elements inherit level from their parent title
 	byID := make(map[int]*Element)
 	for i := range elements {
 		byID[elements[i].ID] = &elements[i]
@@ -268,7 +268,7 @@ func attachParents(elements []Element) {
 	}
 }
 
-// -- 阶段: Caption 合并 --
+// -- Phase: caption merge --
 
 func mergeCaptions(elements []Element, separator string) []Element {
 	out := make([]Element, len(elements))
@@ -281,7 +281,7 @@ func mergeCaptions(elements []Element, separator string) []Element {
 		if el.Type == "figure" {
 			capRe = FIGURE_CAPTION
 		} else if el.Type == "table" {
-			// 对于表格，不进行任何caption合并，保持纯HTML表格结构
+			// tables: no caption merge, keep pure HTML table structure
 			i++
 			continue
 		} else {
@@ -289,7 +289,7 @@ func mergeCaptions(elements []Element, separator string) []Element {
 			continue
 		}
 
-		// 只处理figure的caption合并
+		// caption merge applies to figures only
 		if i > 0 && out[i-1].Type == "text" {
 			prev := out[i-1]
 			prevText := strings.TrimSpace(prev.Text)
@@ -332,9 +332,9 @@ func hasHeading(text string) bool {
 	return false
 }
 
-// -- 半解析辅助（供 handlers 使用） --
+// -- semi-parse helpers (used by handlers) --
 
-// FindAbstract 定位"摘要"区域。返回 (text, ids, startIdx, endIdx)。
+// FindAbstract locates the abstract section. Returns (text, ids, startIdx, endIdx).
 func FindAbstract(elements []Element) (text string, ids map[int]bool, startIdx int, endIdx int) {
 	ids = make(map[int]bool)
 	var lines []string
@@ -384,11 +384,11 @@ func FindAbstract(elements []Element) (text string, ids map[int]bool, startIdx i
 	return text, ids, startIdx, endIdx
 }
 
-// SplitTableText 把 Table 元素的原文按 separator 切分，返回 (caption, body, footer, format)。
+// SplitTableText splits a Table element's text by separator; returns (caption, body, footer).
 func SplitTableText(text, separator string) (caption, body, footer string) {
 	parts := splitBySeparator(text, separator)
 
-	// 优先 HTML 表
+	// prefer HTML table
 	for idx, part := range parts {
 		if HTML_TABLE_OPEN.MatchString(part) {
 			if idx > 0 {
@@ -401,7 +401,7 @@ func SplitTableText(text, separator string) (caption, body, footer string) {
 		}
 	}
 
-	// 再试 Markdown 表
+	// then try Markdown table
 	for idx, part := range parts {
 		s := strings.TrimSpace(part)
 		if strings.HasPrefix(s, "|") {
@@ -434,7 +434,7 @@ func splitBySeparator(text, sep string) []string {
 	return strings.Split(text, sep)
 }
 
-// SplitFigureText 把 Figure 元素的原文按 separator 切分，返回 (description, imageMarkdown, hasImage)。
+// SplitFigureText splits a Figure element's text by separator; returns (description, imageMarkdown, hasImage).
 func SplitFigureText(text, separator string) (description, imageMarkdown string, hasImage bool) {
 	parts := splitBySeparator(text, separator)
 	imgIdx := -1

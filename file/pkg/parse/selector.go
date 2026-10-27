@@ -9,9 +9,10 @@ import (
 	"golang.org/x/net/html"
 )
 
-// SelectHTML 按 CSS 选择器从 HTML 字节中抽取**第一个**匹配元素，序列化回 HTML 字节。
-// selector 为空或纯空白时按 "body" 处理；未匹配到任何元素时返回长度为 0 的字节切片与 nil error
-// （由调用方按「空页规则」决定跳过，见设计 §4.2 第 7 步）。
+// SelectHTML extracts the **first** element matching a CSS selector from HTML
+// bytes, re-serialized to HTML bytes. An empty/blank selector means "body";
+// no match returns a zero-length byte slice with nil error (the caller applies
+// the "empty page rule" to skip, see design §4.2 step 7).
 func SelectHTML(htmlBytes []byte, selector string) ([]byte, error) {
 	doc, err := html.Parse(bytes.NewReader(htmlBytes))
 	if err != nil {
@@ -20,19 +21,23 @@ func SelectHTML(htmlBytes []byte, selector string) ([]byte, error) {
 	return SelectNode(doc, selector)
 }
 
-// SelectNode 与 SelectHTML 相同，但作用于已解析的节点（不限于文档根，
-// 传入任一棵子树的根同样合法），供调用方复用一个 DOM
-// （internal/crawler 需要同时做链接提取与正文裁剪）。
+// SelectNode is like SelectHTML but operates on a parsed node (not limited to
+// the document root — any subtree root is valid), letting callers reuse one DOM
+// (internal/crawler needs both link extraction and content scoping).
 //
-// 语义与 cascadia.Selector.MatchFirst 一致：**选择器也匹配传入节点自身**，
-// 而不只是搜索它的子孙节点（cascadia.Query 才是「排除自身、只搜子孙」）。
-// 于是传入子树根时，子树根自己命中选择器必须返回它自己；若改用 cascadia.Query，
-// 这种情况会返回长度为 0 的字节切片，上层会按「selector matched nothing」丢掉整页。
+// Semantics match cascadia.Selector.MatchFirst: **the selector also matches the
+// passed node itself**, not just its descendants (cascadia.Query is
+// "exclude self, search descendants only"). So when a subtree root is passed
+// and matches the selector, it must return itself; with cascadia.Query this
+// case would return zero-length bytes and the caller would drop the whole page
+// as "selector matched nothing".
 //
-// 注意：当前唯一的调用点（internal/crawler）传的是**文档根**，而文档节点不会被
-// 任何 CSS 选择器命中，所以两种 API 在那里行为相同、今天看不出差别。这条自含语义
-// 是为「传子树根」这个受支持的用法钉住的——**不要因为它今天不被触发就换成
-// cascadia.Query**，那会让将来复用同一个 DOM 做多级裁剪的调用方静默丢页。
+// Note: the only current caller (internal/crawler) passes the **document root**,
+// which no CSS selector matches, so both APIs behave identically there and the
+// difference is invisible today. This self-inclusive semantics is pinned for
+// the supported "pass a subtree root" usage — **do not switch to cascadia.Query
+// just because it isn't triggered today**; future callers reusing one DOM for
+// multi-level scoping would silently lose pages.
 func SelectNode(doc *html.Node, selector string) ([]byte, error) {
 	selector = strings.TrimSpace(selector)
 	if selector == "" {

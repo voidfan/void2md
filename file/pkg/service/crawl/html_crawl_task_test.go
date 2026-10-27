@@ -48,7 +48,7 @@ func TestStore_SubmitAndGet(t *testing.T) {
 	}
 }
 
-// TestStore_Dedup 设计 §2.1：同 URL 存活任务直接返回已有 taskId。
+// TestStore_Dedup: design §2.1 — an alive task for the same URL returns the existing taskId.
 func TestStore_Dedup(t *testing.T) {
 	s := newTestStore()
 	id1, _, _ := s.submit("https://a.com/", crawler.Options{})
@@ -63,7 +63,7 @@ func TestStore_Dedup(t *testing.T) {
 		t.Errorf("dedup returned %q, want %q", id2, id1)
 	}
 
-	// 终态后不再去重，可以重新提交
+	// after a terminal state there is no dedupe; resubmission is allowed
 	s.finishSuccess(id1, &crawler.Result{Pages: []crawler.Page{{URL: "https://a.com/", Markdown: "x"}}})
 	id3, deduped, _ := s.submit("https://a.com/", crawler.Options{})
 	if deduped {
@@ -74,7 +74,7 @@ func TestStore_Dedup(t *testing.T) {
 	}
 }
 
-// TestStore_MaxTasks 覆盖评审关注点：存活任务数超限 → 429 对应的错误。
+// TestStore_MaxTasks covers the review concern: alive-task overflow → the 429 error.
 func TestStore_MaxTasks(t *testing.T) {
 	cfg := testCrawlCfg()
 	cfg.MaxTasks = 1
@@ -92,31 +92,32 @@ func TestStore_MaxTasks(t *testing.T) {
 		t.Errorf("error = %v, want a 429 DiagnosisException", err)
 	}
 
-	// 占用者进入终态后应放行。
+	// The slot must be released once the occupant turns terminal.
 	//
-	// **必须真的断言「放行」，不能只调一次 finishFailed 就算完。** 原写法是
-	// `s.finishFailed("hpa_", nil)`——"hpa_" 是个不存在的 taskId，而 finishFailed
-	// 开头就是 `if !ok || !e.alive { return }`，于是它什么都没做，后面也没有断言。
-	// 结果这条语义零覆盖：把存活计数改成统计全部条目（`for range s.tasks { alive++ }`，
-	// 不判 e.alive）时，所有任务都终态了仍会被拒 429，直到 TTL(1800s) 扫掉条目为止，
-	// 线上表现是「服务空闲却被 429 打满半小时」——而本次提交仍然全绿。
+	// Must actually assert the release, not just call finishFailed once. The original form
+	// was `s.finishFailed("hpa_", nil)` — a nonexistent taskId, and finishFailed starts with
+	// `if !ok || !e.alive { return }`, so it did nothing and nothing was asserted. That left
+	// this semantic uncovered: counting all entries as alive (`for range s.tasks { alive++ }`,
+	// ignoring e.alive) would keep rejecting with 429 even after all tasks turned terminal,
+	// until TTL(1800s) swept the entries — "idle service 429s for half an hour" in production,
+	// yet all tests green.
 	s.finishFailed(id1, nil)
 	if _, _, err := s.submit("https://a.com/3", crawler.Options{}); err != nil {
 		t.Errorf("after the occupant reaches a terminal state the slot must be released, got %v", err)
 	}
 }
 
-// TestStore_CancelBeforeSetCancel 钉住 setCancel 的自愈分支（设计 §2.3）。
+// TestStore_CancelBeforeSetCancel pins setCancel's self-heal branch (design §2.3).
 //
-// 真实时序：Submit 里是 `go s.run(id, opts)`，而 setCancel 在 run 内部才被调用。
-// store.submit 返回后任务已对 GET/DELETE 可见，但取消函数还没登记。这段窗口内
-// 到达的 DELETE 会走 cancel()——它把状态置为 cancelled 并清空载荷，但彼时
-// e.cancel 仍是 nil，于是 **ctx 从不被取消**，抓取 goroutine 继续跑到 TaskTimeout
-// （默认 300s），期间持续出网、持续往内存里堆 Markdown 再丢弃；而客户端拿到的是
-// 204，完全看不出异常。负载越高（MaxTasks 个任务并存）这个窗口越宽。
+// Real timing: Submit does `go s.run(id, opts)` and setCancel is only called inside run.
+// After store.submit returns, the task is visible to GET/DELETE but the cancel func isn't
+// registered yet. A DELETE in this window goes through cancel() — status becomes cancelled
+// and the payload is cleared, but e.cancel is still nil, so the ctx is never cancelled: the
+// crawl goroutine keeps running to TaskTimeout (default 300s), fetching and discarding
+// Markdown, while the client sees 204. The window widens under load (MaxTasks concurrent).
 //
-// 这里手工复现该时序：先 cancel，再补一次迟到的 setCancel，断言 ctx 被立刻取消。
-// 若 setCancel 退回成「有则赋值」的写法，本用例必失败。
+// This test reproduces that timing manually: cancel first, then a late setCancel, asserting
+// the ctx is cancelled immediately. If setCancel regressed to "assign if present", this fails.
 func TestStore_CancelBeforeSetCancel(t *testing.T) {
 	s := newTestStore()
 	id, _, err := s.submit("https://a.com/", crawler.Options{})
@@ -129,7 +130,7 @@ func TestStore_CancelBeforeSetCancel(t *testing.T) {
 
 	ctx, cancelFn := context.WithCancel(context.Background())
 	defer cancelFn()
-	s.setCancel(id, cancelFn) // 迟到的登记：此时任务已终态
+	s.setCancel(id, cancelFn) // late registration: task is already terminal
 
 	select {
 	case <-ctx.Done():
@@ -139,8 +140,9 @@ func TestStore_CancelBeforeSetCancel(t *testing.T) {
 	}
 }
 
-// TestStore_TTLsweep 设计 §7：终态任务超过 TTL 后被清理。
-// 直接把 doneAt 拨到过去，避免 sleep 整个 TTL（TaskTTLSeconds 是整秒，最小 1s）。
+// TestStore_TTLsweep: design §7 — terminal tasks are cleaned up after the TTL.
+// Sets doneAt into the past directly instead of sleeping the whole TTL
+// (TaskTTLSeconds is whole seconds, minimum 1s).
 func TestStore_TTLsweep(t *testing.T) {
 	s := newTestStore()
 	id, _, err := s.submit("https://a.com/", crawler.Options{})
@@ -149,12 +151,13 @@ func TestStore_TTLsweep(t *testing.T) {
 	}
 	s.finishSuccess(id, &crawler.Result{Pages: []crawler.Page{{URL: "https://a.com/", Markdown: "x"}}})
 
-	// 已终态但未过 TTL：仍可查询
+	// terminal but within TTL: still queryable
 	if _, ok := s.get(id); !ok {
 		t.Fatal("task must survive before TTL expires")
 	}
 
-	// 把终态时间拨到 TTL 之外（同包白盒，直接改 doneAt——get 会顺带 sweep）
+	// push the finish time past the TTL (white-box, same package: set doneAt directly —
+	// get sweeps along the way)
 	s.mu.Lock()
 	s.tasks[id].doneAt = time.Now().Add(-time.Duration(s.cfg.TaskTTLSeconds+60) * time.Second)
 	s.mu.Unlock()
@@ -164,8 +167,9 @@ func TestStore_TTLsweep(t *testing.T) {
 	}
 }
 
-// TestStore_FinishFailed 设计 §2.2 终态判定规则：抓到 0 页 → failed，
-// error 携带具体原因；载荷清空；失败后同 URL 可重新提交（不被去重挡住）。
+// TestStore_FinishFailed: design §2.2 terminal-state rules — 0 pages fetched → failed,
+// error carries the reason; payload cleared; the same URL can be resubmitted after
+// failure (not blocked by dedupe).
 func TestStore_FinishFailed(t *testing.T) {
 	s := newTestStore()
 	id, _, err := s.submit("https://a.com/", crawler.Options{})
@@ -192,7 +196,7 @@ func TestStore_FinishFailed(t *testing.T) {
 		t.Error("failed task must not be marked truncated")
 	}
 
-	// 终态后同 URL 可重新提交（finishLocked 已清 byURL）
+	// after terminal state the same URL can be resubmitted (finishLocked cleared byURL)
 	if _, deduped, _ := s.submit("https://a.com/", crawler.Options{}); deduped {
 		t.Error("after failed, submit must not be deduped")
 	}

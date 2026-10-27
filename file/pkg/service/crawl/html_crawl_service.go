@@ -9,23 +9,28 @@ import (
 	"time"
 
 	"void2md/common/diagnosis"
+	"void2md/common/logger"
 	"void2md/file/pkg/config"
 	"void2md/file/pkg/crawler"
 )
 
-// HTMLCrawlService 站点知识获取对外 API。
+// log returns the module logger lazily so it picks up the handler
+// configured by logger.InitLogger even though package init runs before main.
+func log() *slog.Logger { return logger.GetLogger("crawl") }
+
+// HTMLCrawlService is the public API for site knowledge crawling.
 type HTMLCrawlService struct {
 	store *htmlCrawlStore
 	cfg   config.HTMLCrawlConfig
 }
 
-// NewHTMLCrawlService 按给定配置构造服务（供单例与测试使用）。
+// NewHTMLCrawlService builds a service with the given config (used by the singleton and tests).
 //
-// 这里对 cfg 做一次 `Normalize()`：**零值一律取默认值，0 不表示「关掉」**
-// （见 config.HTMLCrawlConfig.Normalize 的说明）。归一化放在这个入口、而不是散在各个
-// 读取点，是为了让服务、任务表、`crawler.Options` 三处看到同一份已归一化的配置——
-// 它们各自的兜底来源不同（crawler.Crawl 与 NewFetcher 内部还各有一套），
-// 分开处理迟早漂移成「配置里写的默认」与「实际生效的默认」不一致。
+// cfg is Normalize()d here: zero values always become defaults — 0 never means "off"
+// (see config.HTMLCrawlConfig.Normalize). Normalizing at this entry point, instead of at
+// scattered read sites, keeps the service, task store, and crawler.Options seeing one
+// normalized config; their fallback sources differ (crawler.Crawl and NewFetcher have
+// their own), so handling them separately would eventually drift.
 func NewHTMLCrawlService(cfg config.HTMLCrawlConfig) *HTMLCrawlService {
 	cfg = cfg.Normalize()
 	return &HTMLCrawlService{store: newHTMLCrawlStore(cfg), cfg: cfg}
@@ -36,7 +41,7 @@ var (
 	htmlCrawlSvc  *HTMLCrawlService
 )
 
-// GetHTMLCrawlService 返回全局单例。
+// GetHTMLCrawlService returns the global singleton.
 func GetHTMLCrawlService() *HTMLCrawlService {
 	htmlCrawlOnce.Do(func() {
 		htmlCrawlSvc = NewHTMLCrawlService(config.LoadConfig().HTMLCrawlConfig)
@@ -44,13 +49,13 @@ func GetHTMLCrawlService() *HTMLCrawlService {
 	return htmlCrawlSvc
 }
 
-// buildOptions 把服务端配置折成单次抓取参数（MB → 字节的换算在这里完成）。
+// buildOptions folds service config into per-crawl options (MB → bytes conversion happens here).
 //
-// 单独抽出来是为了可测：两个 `<< 20` 若被删掉，配置里写的 200/10（单位 MB）就会
-// 以 **200/10 字节**传下去——单页 HTML 上限 10 字节、单任务字节预算 200 字节，
-// 抓取会立刻全线失败，而 HTTP 层用例喂的都是 httptest 的小页面，未必暴露得出来。
+// Factored out for testability: if the two `<< 20` were dropped, the configured 200/10 (MB)
+// would be passed as 200/10 *bytes* — every fetch would fail immediately, and HTTP-level
+// tests feeding small httptest pages might not expose it.
 //
-// 配置在构造时已 Normalize（零值 → 默认值），故这里读到的都是正数。
+// Config is already Normalized at construction (zero → default), so all values read here are positive.
 func (s *HTMLCrawlService) buildOptions(u *url.URL, selector string, pages int) crawler.Options {
 	return crawler.Options{
 		URL:          u.String(),
@@ -65,13 +70,14 @@ func (s *HTMLCrawlService) buildOptions(u *url.URL, selector string, pages int) 
 	}
 }
 
-// resolveMaxPages 解析本次请求的页数上限：入参优先，`nil` 取服务端默认；
-// 超过 HardMaxPages 按 clamp 处理并 warn（设计 §2.1，不报错）；入参 <=0 报 400。
+// resolveMaxPages resolves the page limit for a request: the param wins, nil takes the
+// server default; over HardMaxPages is clamped with a warn (design §2.1, not an error);
+// param <= 0 returns 400.
 //
-// **这里不再有 `if pages <= 0 { pages = 200 }` 那样的第二份硬编码默认值。**
-// 默认值只来自 `s.cfg.MaxPages`，而该字段在构造时已被 Normalize 成非零
-// （见 NewHTMLCrawlService）——两份各自演化的字面量正是「配置写 200、实际用别的」
-// 这类漂移的来源。
+// No second hardcoded default here (e.g. `if pages <= 0 { pages = 200 }`): the default
+// comes only from s.cfg.MaxPages, normalized to non-zero at construction (see
+// NewHTMLCrawlService) — two independently evolving literals are how "config says 200,
+// code uses something else" drift starts.
 func (s *HTMLCrawlService) resolveMaxPages(maxPage *int) (int, error) {
 	pages := s.cfg.MaxPages
 	if maxPage != nil {
@@ -84,17 +90,17 @@ func (s *HTMLCrawlService) resolveMaxPages(maxPage *int) (int, error) {
 		pages = *maxPage
 	}
 	if pages > s.cfg.HardMaxPages {
-		slog.Warn("html crawl maxPage clamped to hard limit",
+		log().Warn("html crawl maxPage clamped to hard limit",
 			"requested", pages, "hardMax", s.cfg.HardMaxPages)
 		pages = s.cfg.HardMaxPages
 	}
 	return pages, nil
 }
 
-// Submit 校验 URL 并创建抓取任务。
-// maxPage 为 nil 表示使用服务端默认值；非 nil 且 <=0 返回 400；
-// 超过 HardMaxPages 按 clamp 处理并 warn（设计 §2.1，不报错）。
-// 返回 (taskID, 是否命中已有存活任务, error)。
+// Submit validates the URL and creates a crawl task.
+// maxPage nil means server default; non-nil <=0 returns 400; over HardMaxPages is
+// clamped with a warn (design §2.1, not an error).
+// Returns (taskID, whether an existing live task was hit, error).
 func (s *HTMLCrawlService) Submit(rawURL, selector string, maxPage *int) (string, bool, error) {
 	u, err := crawler.NormalizeURL(rawURL)
 	if err != nil {
@@ -123,19 +129,19 @@ func (s *HTMLCrawlService) Submit(rawURL, selector string, maxPage *int) (string
 	return id, false, nil
 }
 
-// Get 返回任务快照。
+// Get returns a task snapshot.
 func (s *HTMLCrawlService) Get(taskID string) (HTMLCrawlTask, bool) {
 	return s.store.get(taskID)
 }
 
-// Cancel 取消任务。返回 false 表示任务不存在。
+// Cancel cancels a task; false means the task does not exist.
 func (s *HTMLCrawlService) Cancel(taskID string) bool {
 	return s.store.cancel(taskID)
 }
 
-// run 执行一次抓取并把结果写回任务表。
+// run executes one crawl and writes the result back to the task store.
 func (s *HTMLCrawlService) run(taskID string, opts crawler.Options) {
-	// 任务级 ctx 独立于请求 ctx（提交请求已经返回），由 Cancel 触发取消
+	// task-level ctx is independent of the request ctx (submit already returned); Cancel triggers it
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -147,26 +153,27 @@ func (s *HTMLCrawlService) run(taskID string, opts crawler.Options) {
 	})
 
 	if err != nil {
-		// 取消优先于失败。**注意：这条分支今天不可达**——cancel 的唯一来源是
-		// store.cancel()，它已先把 alive 置 false，于是 finishCancelled 与
-		// finishFailed 都会在 `!e.alive` 守卫处直接返回；把整段删掉不改变任何
-		// 可观测结果（只读审计用实跑变异确认：删掉后测试全绿）。
+		// Cancellation takes precedence over failure. NOTE: this branch is unreachable
+		// today — the only cancel source is store.cancel(), which clears alive first, so
+		// both finishCancelled and finishFailed return at the `!e.alive` guard; deleting
+		// this block changes nothing observable (verified by mutation: tests stay green).
 		//
-		// 保留它是因为语义上的防线位置确实在这里：一旦将来把 cancel() 改成
-		// 「只 cancel ctx、不立即落终态」，这段就成了「已取消的任务不得被写成
-		// failed」的唯一防线。**那时它必须配一条直接驱动它的用例**——当前 ctx
-		// 由 run 内部用 context.WithCancel(context.Background()) 创建、无法从外部
-		// 注入，所以今天测不到它。
+		// Kept because this is where the semantic defense belongs: if cancel() ever changes
+		// to "cancel ctx only, don't write a terminal state", this becomes the only guard
+		// against marking a cancelled task as failed. At that point it must get a test that
+		// drives it directly — the ctx is created inside run via
+		// context.WithCancel(context.Background()) and cannot be injected from outside,
+		// so it is untestable today.
 		if ctx.Err() == context.Canceled {
 			s.store.finishCancelled(taskID)
 			return
 		}
-		slog.Warn("html crawl task failed", "taskId", taskID, "url", opts.URL, "error", err)
+		log().Warn("html crawl task failed", "taskId", taskID, "url", opts.URL, "error", err)
 		s.store.finishFailed(taskID, err)
 		return
 	}
 
 	s.store.finishSuccess(taskID, res)
-	slog.Info("html crawl task completed", "taskId", taskID, "url", opts.URL,
+	log().Info("html crawl task completed", "taskId", taskID, "url", opts.URL,
 		"pages", len(res.Pages), "truncated", res.Truncated, "stopReason", string(res.StopReason))
 }

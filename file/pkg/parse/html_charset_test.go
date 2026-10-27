@@ -13,9 +13,10 @@ import (
 	"golang.org/x/text/transform"
 )
 
-// encodeWith 用指定编码器把 UTF-8 文本编成目标编码字节。
-// 解码测试一律用**真实编码字节**而非手写/ASCII 字节：ASCII 在多数编码下是透明的，
-// 用 ASCII 构造的 fixture 在「用错解码器」和「完全不解码」两种错误实现下都照样通过。
+// encodeWith encodes UTF-8 text to target-encoding bytes with the given encoder.
+// Decode tests always use **real encoded bytes**, not hand-written/ASCII: ASCII
+// is transparent under most encodings, so ASCII fixtures pass under both
+// "wrong decoder" and "no decoding at all" broken implementations.
 func encodeWith(t *testing.T, text string, enc transform.Transformer) []byte {
 	t.Helper()
 	var buf bytes.Buffer
@@ -29,7 +30,7 @@ func encodeWith(t *testing.T, text string, enc transform.Transformer) []byte {
 	return buf.Bytes()
 }
 
-// gbkHTML 构造一个 GBK 编码、且 <meta> 声称 gbk 的页面。
+// gbkHTML builds a GBK-encoded page whose <meta> claims gbk.
 func gbkHTML(t *testing.T) []byte {
 	t.Helper()
 	utf8HTML := `<html><head><meta charset="gbk"></head><body><p>中文内容</p></body></html>`
@@ -44,7 +45,7 @@ func gbkHTML(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
-// TestParseHTMLBytesToMarkdown_Unchanged 锁定既有入口的行为：仍按 <meta charset> 解码。
+// TestParseHTMLBytesToMarkdown_Unchanged pins the existing entry's behavior: still decodes per <meta charset>.
 func TestParseHTMLBytesToMarkdown_Unchanged(t *testing.T) {
 	md, pages, err := ParseHTMLBytesToMarkdown(context.Background(), gbkHTML(t), "x.html")
 	if err != nil {
@@ -58,8 +59,8 @@ func TestParseHTMLBytesToMarkdown_Unchanged(t *testing.T) {
 	}
 }
 
-// TestParseHTMLBytesToMarkdownWithCharset_HintWins 锁定 charset hint 优先于 <meta>。
-// 页面字节已是 UTF-8（无 meta），调用方传 "utf-8" hint 时必须原样使用，不得二次解码。
+// TestParseHTMLBytesToMarkdownWithCharset_HintWins pins that the charset hint wins over <meta>.
+// The bytes are already UTF-8 (no meta); with a "utf-8" hint they must be used as-is, not re-decoded.
 func TestParseHTMLBytesToMarkdownWithCharset_HintWins(t *testing.T) {
 	utf8HTML := []byte(`<html><body><p>中文内容</p></body></html>`)
 	md, _, err := ParseHTMLBytesToMarkdownWithCharset(context.Background(), utf8HTML, "x.html", "utf-8")
@@ -71,18 +72,20 @@ func TestParseHTMLBytesToMarkdownWithCharset_HintWins(t *testing.T) {
 	}
 }
 
-// TestDecodeHTMLBytes_HintOverridesMeta 直接锁定「hint 覆盖 meta」这一核心行为：
-// 字节是 UTF-8，但 meta 自称 gbk —— 传 utf-8 hint 时不得按 gbk 解，否则乱码。
+// TestDecodeHTMLBytes_HintOverridesMeta directly pins "hint overrides meta":
+// bytes are UTF-8 but meta claims gbk — with a utf-8 hint they must not be
+// decoded as gbk, else mojibake.
 //
-// fixture 必须含**非 ASCII** 字符：x/text 的 GBK 解码器对 ASCII 是透明的，
-// 若 fixture 全为 ASCII，「忽略 hint、按 gbk 解」得到的字节与原文完全相同，
-// 断言照样通过——这条测试就退化成空转（Task 3 spec 评审实测确认）。
-// 末尾的对照断言即是防止有人再把 fixture 换回 ASCII。
+// The fixture must contain **non-ASCII** characters: x/text's GBK decoder is
+// transparent for ASCII, so an all-ASCII fixture makes "ignore hint, decode as
+// gbk" produce bytes identical to the original and the assertion still passes —
+// the test degenerates into a no-op (verified in the Task 3 spec review).
+// The control assertion at the end prevents anyone from switching the fixture back to ASCII.
 func TestDecodeHTMLBytes_HintOverridesMeta(t *testing.T) {
-	// 字节是 UTF-8 且含中文，但 meta 自称 gbk：这正是「声明与真实字节冲突」的场景。
+	// Bytes are UTF-8 Chinese, but meta claims gbk: the "declaration conflicts with real bytes" scenario.
 	utf8Bytes := []byte(`<meta charset="gbk"><p>中文内容</p>`)
 
-	// 有 utf-8 hint：原样返回，不得按 meta 的 gbk 再解一次
+	// With a utf-8 hint: return as-is, must not re-decode per meta's gbk
 	got, err := DecodeHTMLBytes(utf8Bytes, "utf-8")
 	if err != nil {
 		t.Fatalf("hint decode error: %v", err)
@@ -91,22 +94,23 @@ func TestDecodeHTMLBytes_HintOverridesMeta(t *testing.T) {
 		t.Errorf("utf-8 hint must return bytes unchanged, got %q", got)
 	}
 	if !strings.Contains(string(got), "中文内容") {
-		t.Errorf("hint 必须优先于 meta：中文被按 gbk 误解成了 %q", got)
+		t.Errorf("hint must win over meta: the Chinese was misdecoded as gbk into %q", got)
 	}
 
-	// 对照：无 hint 时按 meta 的 gbk 解，中文必然乱码。
-	// 这条同时证明 fixture 有区分两条路径的能力——若它哪天不再乱码，
-	// 说明 fixture 退化了，上面的断言也就重新变成空转。
+	// Control: without a hint, decoding per meta's gbk necessarily garbles the
+	// Chinese. This also proves the fixture can distinguish the two paths — if
+	// it ever stops garbling, the fixture has degraded and the assertion above
+	// becomes a no-op again.
 	noHint, err := DecodeHTMLBytes(utf8Bytes, "")
 	if err != nil {
 		t.Fatalf("no-hint decode error: %v", err)
 	}
 	if strings.Contains(string(noHint), "中文内容") {
-		t.Errorf("fixture 失效：无 hint 时也解出了正确中文，无法区分 hint 与 meta 两条路径")
+		t.Errorf("fixture broken: correct Chinese decoded even without a hint; cannot distinguish the hint vs meta paths")
 	}
 }
 
-// TestParseHTMLBytesToMarkdownWithCharset_EmptyInput 与既有入口一致的边界行为。
+// TestParseHTMLBytesToMarkdownWithCharset_EmptyInput: boundary behavior matching the existing entry.
 func TestParseHTMLBytesToMarkdownWithCharset_EmptyInput(t *testing.T) {
 	md, pages, err := ParseHTMLBytesToMarkdownWithCharset(context.Background(), []byte("   \n"), "x.html", "")
 	if err != nil {
@@ -117,13 +121,14 @@ func TestParseHTMLBytesToMarkdownWithCharset_EmptyInput(t *testing.T) {
 	}
 }
 
-// TestDecodeHTMLBytes_HintTriggersDecode 锁定 hint 的**正向**作用：hint 必须真的
-// 作为解码来源，而不只是用来抑制 meta 解码。
+// TestDecodeHTMLBytes_HintTriggersDecode pins the hint's **positive** role: it must
+// actually serve as the decode source, not merely suppress meta decoding.
 //
-// 缺口是实测出来的：若实现被改成「hint 只抑制 meta、永不用作解码来源」，
-// 原先那 5 条测试**全部通过**——因为它们只传 "" 或 "utf-8"，全是抑制分支。
+// The gap was measured: if the implementation became "hint only suppresses
+// meta, never used as decode source", the original 5 tests **all passed** —
+// they only pass "" or "utf-8", all suppression branches.
 func TestDecodeHTMLBytes_HintTriggersDecode(t *testing.T) {
-	// GBK 字节、**无 meta**：探测不到编码，无 hint 时只能原样返回（乱码）。
+	// GBK bytes, **no meta**: nothing to detect, so without a hint only as-is return (mojibake) is possible.
 	gbkNoMeta := append([]byte(`<html><body><p>`), 0xD6, 0xD0, 0xCE, 0xC4)
 	gbkNoMeta = append(gbkNoMeta, []byte(`</p></body></html>`)...)
 
@@ -132,7 +137,7 @@ func TestDecodeHTMLBytes_HintTriggersDecode(t *testing.T) {
 		t.Fatalf("no-hint decode error: %v", err)
 	}
 	if strings.Contains(string(raw), "中文") {
-		t.Fatal("fixture 退化：无 hint 也解出了中文，无法区分 hint 是否真的触发了解码")
+		t.Fatal("fixture degraded: Chinese decoded even without a hint; cannot tell whether the hint really triggered decoding")
 	}
 
 	got, err := DecodeHTMLBytes(gbkNoMeta, "gbk")
@@ -140,16 +145,18 @@ func TestDecodeHTMLBytes_HintTriggersDecode(t *testing.T) {
 		t.Fatalf("hint gbk: %v", err)
 	}
 	if !strings.Contains(string(got), "中文") {
-		t.Errorf("hint \"gbk\" 必须触发 GBK 解码，got %q", got)
+		t.Errorf("hint \"gbk\" must trigger GBK decoding, got %q", got)
 	}
 }
 
-// TestDecodeHTMLBytes_HintNormalization 覆盖 hint 的大小写与空白归一化。
-// 这不是理论情形：mime.ParseMediaType 对 "text/html; charset=UTF-8" 返回的
-// "UTF-8" **保留大小写**（实测确认），而 Task 6 的 Fetcher 计划把这个值当作 hint 传进来。
+// TestDecodeHTMLBytes_HintNormalization covers hint case and whitespace normalization.
+// Not theoretical: mime.ParseMediaType returns "UTF-8" for
+// "text/html; charset=UTF-8" **with case preserved** (verified), and the Task 6
+// Fetcher passes that value in as the hint.
 func TestDecodeHTMLBytes_HintNormalization(t *testing.T) {
-	// meta 声称 gbk、字节却是 UTF-8：归一化若失效（把 "UTF-8" 当成可解编码去解，
-	// 或没 TrimSpace 而整串匹配不上），就会退到 meta 按 gbk 解，中文变乱码。
+	// meta claims gbk but bytes are UTF-8: if normalization fails (treating "UTF-8"
+	// as a decodable charset, or no TrimSpace so the full string doesn't match),
+	// it falls back to meta's gbk and the Chinese garbles.
 	utf8WithGbkMeta := []byte(`<meta charset="gbk"><p>中文内容</p>`)
 
 	for _, hint := range []string{"utf-8", "UTF-8", "Utf-8", " utf-8 ", "\tUTF-8\n"} {
@@ -158,25 +165,26 @@ func TestDecodeHTMLBytes_HintNormalization(t *testing.T) {
 			t.Fatalf("hint %q: %v", hint, err)
 		}
 		if !bytes.Equal(got, utf8WithGbkMeta) {
-			t.Errorf("hint %q 应视为 utf-8（不做解码），got %q", hint, got)
+			t.Errorf("hint %q should be treated as utf-8 (no decoding), got %q", hint, got)
 		}
 	}
 
-	// 全空白 hint 等价于空 hint → 回退 meta 探测 → 按 gbk 解，故必然与原字节不同。
+	// An all-blank hint equals an empty hint → fall back to meta probing → decode as gbk, so it must differ from the original bytes.
 	blank, err := DecodeHTMLBytes(utf8WithGbkMeta, "   ")
 	if err != nil {
 		t.Fatalf("blank hint: %v", err)
 	}
 	if bytes.Equal(blank, utf8WithGbkMeta) {
-		t.Error("全空白 hint 应等价于空 hint 并回退到 meta 探测，不应原样返回")
+		t.Error("an all-blank hint should equal an empty hint and fall back to meta probing, not return as-is")
 	}
 
-	// 可解编码的大小写归一化——这才是真正的缺口。上面那个循环里的 "UTF-8" 家族在
-	// DecodeHTMLBytes 的 utf-8 特判处（charset == "" || isUTF8Charset(charset)）就被
-	// 短路了，根本走不到 getCharsetDecoder，所以「把 getCharsetDecoder 的
-	// switch strings.ToLower(charset) 改成 switch charset」这个变异此前无人能抓。
-	// fixture 刻意**不带 meta**：少了 ToLower 时 charset 会保持 "GBK" 原样，
-	// getCharsetDecoder 返回 nil，直接变成 unsupported charset 报错。
+	// Case normalization of decodable charsets — this is the real gap. The
+	// "UTF-8" family in the loop above is short-circuited at DecodeHTMLBytes's
+	// utf-8 special case (charset == "" || isUTF8Charset(charset)) and never
+	// reaches getCharsetDecoder, so the mutation "change getCharsetDecoder's
+	// switch strings.ToLower(charset) to switch charset" was previously
+	// uncatchable. The fixture deliberately has **no meta**: without ToLower,
+	// charset stays "GBK", getCharsetDecoder returns nil, and it errors as unsupported charset.
 	gbkNoMeta := append([]byte(`<p>`), 0xD6, 0xD0, 0xCE, 0xC4)
 	gbkNoMeta = append(gbkNoMeta, []byte(`</p>`)...)
 	for _, hint := range []string{"gbk", "GBK", "GbK", " gbk ", "\tGBK\n"} {
@@ -185,11 +193,11 @@ func TestDecodeHTMLBytes_HintNormalization(t *testing.T) {
 			t.Fatalf("hint %q: %v", hint, err)
 		}
 		if !strings.Contains(string(got), "中文") {
-			t.Errorf("hint %q 必须归一化后按 GBK 解码，got %q", hint, got)
+			t.Errorf("hint %q must be normalized then decoded as GBK, got %q", hint, got)
 		}
 	}
 
-	// 扩展后的新编码族同样要覆盖大写形式（用真实 EUC-KR 字节，非 ASCII）。
+	// The newly added charset families must also cover uppercase forms (real EUC-KR bytes, non-ASCII).
 	euckrNoMeta := append([]byte(`<p>`), encodeWith(t, "한국어", korean.EUCKR.NewEncoder())...)
 	euckrNoMeta = append(euckrNoMeta, []byte(`</p>`)...)
 	for _, hint := range []string{"euc-kr", "EUC-KR", "Euc-KR", " EUC-KR "} {
@@ -198,42 +206,45 @@ func TestDecodeHTMLBytes_HintNormalization(t *testing.T) {
 			t.Fatalf("hint %q: %v", hint, err)
 		}
 		if !strings.Contains(string(got), "한국어") {
-			t.Errorf("hint %q 必须归一化后按 EUC-KR 解码，got %q", hint, got)
+			t.Errorf("hint %q must be normalized then decoded as EUC-KR, got %q", hint, got)
 		}
 	}
 }
 
-// TestDecodeHTMLBytes_UnsupportedHint 覆盖 hint 不可解时的两条出路（回退 meta / 报错），
-// 以及 hint 可解时对 meta 的胜出（meta 可解与不可解各一例）。
+// TestDecodeHTMLBytes_UnsupportedHint covers the two exits when the hint is
+// undecodable (fall back to meta / error), plus the decodable hint winning over
+// meta (one case with a decodable meta, one with an undecodable meta).
 func TestDecodeHTMLBytes_UnsupportedHint(t *testing.T) {
 	gbkBytes := append([]byte(`<meta charset="gbk"><p>`), 0xD6, 0xD0, 0xCE, 0xC4)
 	gbkBytes = append(gbkBytes, []byte(`</p>`)...)
 
-	// 1) hint 不可解 + meta 可解 → 回退到 meta，中文必须解得出来。
-	// 「不可解」的范例用 koi8-r：它刻意不在扩展集合里（单字节编码能解任意字节，
-	// 一旦可解，「不可解」这个信号就消失了）。
+	// 1) Undecodable hint + decodable meta → fall back to meta; the Chinese must decode.
+	// The "undecodable" example uses koi8-r: deliberately outside the extended set
+	// (single-byte encodings decode any bytes; once decodable, the "undecodable" signal disappears).
 	got, err := DecodeHTMLBytes(gbkBytes, "koi8-r")
 	if err != nil {
-		t.Fatalf("hint 不可解但 meta 可解时不应报错，got %v", err)
+		t.Fatalf("undecodable hint with decodable meta must not error, got %v", err)
 	}
 	if !strings.Contains(string(got), "中文") {
-		t.Errorf("应回退到 <meta charset=\"gbk\"> 解出中文，got %q", got)
+		t.Errorf("should fall back to <meta charset=\"gbk\"> and decode the Chinese, got %q", got)
 	}
 
-	// 2) hint 不可解 + 无 meta → 报错（保留可观测性，不静默返回乱码）
+	// 2) Undecodable hint + no meta → error (keep observability; don't silently return mojibake)
 	noMeta := append([]byte(`<p>`), 0xD6, 0xD0, 0xCE, 0xC4)
 	noMeta = append(noMeta, []byte(`</p>`)...)
 	if _, err := DecodeHTMLBytes(noMeta, "koi8-r"); err == nil {
-		t.Error("hint 不可解且无 meta 时应返回 unsupported charset 错误")
+		t.Error("undecodable hint with no meta should return an unsupported charset error")
 	}
 
-	// 3) 可解的 hint 仍然最权威：字节是 GBK、hint 是真实可解的 gbk，meta 却谎称 big5。
-	// 必须按 hint 的 gbk 解出「中文」。
+	// 3) A decodable hint is still most authoritative: bytes are GBK, hint is the
+	// genuinely decodable gbk, but meta lies with big5. The Chinese must decode per the hint's gbk.
 	//
-	// meta 谎称的编码必须是本仓库**可解**的（big5 可解；koi8-r 不可解）：只有两者都可解，
-	// 断言才在区分「用对了哪个解码器」而不是在测回退分支。断言取**正向**（必须解出中文）
-	// 而不是「不得解出中文」——后者在「用错了解码器」和「完全不解码」两种错误实现下
-	// 都照样通过，等于空转（这正是被替换掉的那条旧断言）。
+	// The meta's lying charset must itself be **decodable** here (big5 is; koi8-r
+	// isn't): only when both are decodable does the assertion distinguish "which
+	// decoder was used" rather than testing the fallback branch. The assertion is
+	// **positive** (must decode the Chinese) rather than "must not decode the
+	// Chinese" — the latter passes under both "wrong decoder" and "no decoding
+	// at all" broken implementations, i.e. a no-op (that was the replaced old assertion).
 	gbkLyingMeta := append([]byte(`<meta charset="big5"><p>`), 0xD6, 0xD0, 0xCE, 0xC4)
 	gbkLyingMeta = append(gbkLyingMeta, []byte(`</p>`)...)
 
@@ -242,153 +253,170 @@ func TestDecodeHTMLBytes_UnsupportedHint(t *testing.T) {
 		t.Fatalf("hint gbk: %v", err)
 	}
 	if !strings.Contains(string(viaHint), "中文") {
-		t.Errorf("可解的 hint 必须最权威：hint=gbk 时不得改用 meta 的 big5 解码，got %q", viaHint)
+		t.Errorf("a decodable hint must be most authoritative: with hint=gbk it must not decode via meta's big5, got %q", viaHint)
 	}
 
-	// 对照：无 hint 时按 meta 的 big5 解，中文必然解错。这证明该 fixture 有区分
-	// 「hint 胜出」与「meta 胜出」两条路径的能力——若它哪天不再解错，上面的断言就退化成空转。
+	// Control: without a hint, decoding per meta's big5 necessarily gets the
+	// Chinese wrong. This proves the fixture can distinguish "hint wins" from
+	// "meta wins" — if it ever stops decoding wrong, the assertion above degenerates into a no-op.
 	viaMeta, err := DecodeHTMLBytes(gbkLyingMeta, "")
 	if err != nil {
 		t.Fatalf("no-hint decode error: %v", err)
 	}
 	if strings.Contains(string(viaMeta), "中文") {
-		t.Error("fixture 失效：无 hint 时也解出了正确中文，无法区分 hint 与 meta 两条路径")
+		t.Error("fixture broken: correct Chinese decoded even without a hint; cannot distinguish the hint vs meta paths")
 	}
 
-	// 4) meta 声明的是**不可解**编码（koi8-r）时，可解的 hint 同样必须胜出：
-	// 既不得报错，也必须由 hint 解出中文。走的是「hint 可解 → 根本不看 meta」这条路，
-	// 若有人把可解的 hint 也拿去与 meta 比较，这里的 meta 会立刻把结果变成 unsupported charset 错误。
+	// 4) When meta declares an **undecodable** charset (koi8-r), the decodable
+	// hint must equally win: no error, and the Chinese decoded via the hint.
+	// This takes the "hint decodable → never look at meta" path; if someone made
+	// decodable hints compare against meta too, this meta would immediately turn
+	// the result into an unsupported charset error.
 	gbkUnsolvableMeta := append([]byte(`<meta charset="koi8-r"><p>`), 0xD6, 0xD0, 0xCE, 0xC4)
 	gbkUnsolvableMeta = append(gbkUnsolvableMeta, []byte(`</p>`)...)
 
 	viaHint2, err := DecodeHTMLBytes(gbkUnsolvableMeta, "gbk")
 	if err != nil {
-		t.Fatalf("hint gbk + meta 不可解：hint 可解时不应报错，got %v", err)
+		t.Fatalf("hint gbk + undecodable meta: a decodable hint must not error, got %v", err)
 	}
 	if !strings.Contains(string(viaHint2), "中文") {
-		t.Errorf("hint=gbk 必须作为解码来源解出中文，got %q", viaHint2)
+		t.Errorf("hint=gbk must serve as the decode source and produce the Chinese, got %q", viaHint2)
 	}
 }
 
-// TestDecodeHTMLBytes_UnsolvableHintReportsMetaName 锁定**错误文本契约**：
-// hint 不可解、回退到的 <meta> 声明也不可解时，错误里报的必须是**该 <meta> 声明的名字**
-// （见 ParseHTMLBytesToMarkdownWithCharset 的文档：「按该声明的名字报错」），而不是被
-// 回退掉的原始 hint。
+// TestDecodeHTMLBytes_UnsolvableHintReportsMetaName pins the **error text contract**:
+// when the hint is undecodable and the <meta> declaration fallen back to is also
+// undecodable, the error must name **that <meta> declaration** (see
+// ParseHTMLBytesToMarkdownWithCharset's doc: "report that declaration's name"),
+// not the original hint that was fallen back from.
 //
-// 缺口是实测出来的：这条分支此前零覆盖，把 :98 改成
-// fmt.Errorf("unsupported charset: %s", charsetHint)（用原始 hint 取代解析后的 charset）
-// 全包全绿（X20）。后果是调用方按错误文本排障时被指向一个页面根本没声称过的编码。
+// The gap was measured: this branch had zero coverage; changing :98 to
+// fmt.Errorf("unsupported charset: %s", charsetHint) (original hint instead of
+// the resolved charset) kept the whole package green (X20). The consequence is
+// callers debugging by error text get pointed at a charset the page never claimed.
 func TestDecodeHTMLBytes_UnsolvableHintReportsMetaName(t *testing.T) {
-	// hint 与 meta 都刻意选不可解：koi8-r 与 iso-8859-2 都不在扩展集合内。
+	// Hint and meta both deliberately undecodable: neither koi8-r nor iso-8859-2 is in the extended set.
 	data := []byte(`<meta charset="iso-8859-2"><p>hi</p>`)
 
 	_, err := DecodeHTMLBytes(data, "koi8-r")
 	if err == nil {
-		t.Fatal("hint 与 meta 都不可解时必须报错，不得静默返回（这是唯一的可观测信号）")
+		t.Fatal("hint and meta both undecodable must error, not return silently (this is the only observable signal)")
 	}
 	if !strings.Contains(err.Error(), "iso-8859-2") {
-		t.Errorf("错误必须按 <meta> 声明的名字报错，got %q", err)
+		t.Errorf("error must name the <meta> declaration, got %q", err)
 	}
-	// 反向断言：原始 hint 已被回退掉，不该出现在错误文本里。
-	// 正向断言只能证明「iso-8859-2 在」，把 hint 与 charset 拼在一起同样能通过。
+	// Negative assertion: the original hint was fallen back from and must not appear in the error text.
+	// The positive assertion alone only proves "iso-8859-2 is present"; concatenating hint and charset would also pass.
 	if strings.Contains(err.Error(), "koi8-r") {
-		t.Errorf("错误不应出现已被回退掉的原始 hint，got %q", err)
+		t.Errorf("error must not contain the original hint that was fallen back from, got %q", err)
 	}
 }
 
-// <meta charset="utf-8"> 是合法声明，即使 getCharsetDecoder("utf-8") == nil
-// （utf-8 不走 decoder，由 DecodeHTMLBytes 里的特判原样返回），也必须算「探测到了可用声明」。
+// <meta charset="utf-8"> is a valid declaration: even though
+// getCharsetDecoder("utf-8") == nil (utf-8 bypasses decoders, returned as-is by
+// DecodeHTMLBytes's special case), it must count as "a usable declaration was detected".
 //
-// 缺口是实测出来的：若把回退条件收紧成「meta 非空**且** getCharsetDecoder(meta) != nil」，
-// meta="utf-8" + 不可解 hint 会从「原样返回」变成 unsupported charset 报错，而此前无测试能抓。
-// 这类页面并不罕见：header 给了个探测不到的编码、页面自己声明 utf-8。
+// The gap was measured: tightening the fallback condition to "meta non-empty
+// **and** getCharsetDecoder(meta) != nil" would turn meta="utf-8" + undecodable
+// hint from "return as-is" into an unsupported charset error, with no test to
+// catch it. Such pages are not rare: header gives an undetectable charset, page declares utf-8.
 func TestDecodeHTMLBytes_UnsupportedHintFallsBackToUTF8Meta(t *testing.T) {
 	data := []byte(`<meta charset="utf-8"><p>hi</p>`)
 
 	got, err := DecodeHTMLBytes(data, "koi8-r")
 	if err != nil {
-		t.Fatalf("meta=utf-8 是合法声明，hint 不可解时应原样返回而非报错，got %v", err)
+		t.Fatalf("meta=utf-8 is a valid declaration; an undecodable hint should return as-is, not error, got %v", err)
 	}
 	if !bytes.Equal(got, data) {
-		t.Errorf("meta=utf-8 → 原样返回，got %q", got)
+		t.Errorf("meta=utf-8 → return as-is, got %q", got)
 	}
 }
 
-// TestParseHTMLBytesToMarkdownWithCharset_DecodeFailureFallsBackToRaw 锁定解码失败的降级路径：
-// DecodeHTMLBytes 报错时**不得**让整页失败，而是记一条 Warn 后按原始字节继续解析。
+// TestParseHTMLBytesToMarkdownWithCharset_DecodeFailureFallsBackToRaw pins the
+// decode-failure degradation path: when DecodeHTMLBytes errors, the page must
+// **not** fail; log a Warn and continue parsing with the raw bytes.
 //
-// 这条降级路径在本任务之前就存在，但本任务新增了触发来源（hint 不可解 + 无 meta），
-// 更容易被走到；此前零覆盖：把它改成直接 return error 无测试能抓。
+// This path predated this task, but the task added a new trigger (undecodable
+// hint + no meta), making it easier to reach; it had zero coverage — changing
+// it to return the error directly was uncatchable.
 func TestParseHTMLBytesToMarkdownWithCharset_DecodeFailureFallsBackToRaw(t *testing.T) {
-	// GBK 字节、无 meta、hint 不可解（koi8-r 刻意不可解）→ DecodeHTMLBytes 必然报错。
-	// 骨架里放一个 ASCII 锚点 MARKER：下面的断言必须看到它，才算真的锁定了「降级后
-	// **原始字节**被继续解析」。
+	// GBK bytes, no meta, undecodable hint (koi8-r, deliberately undecodable) → DecodeHTMLBytes must error.
+	// The skeleton carries an ASCII anchor MARKER: the assertions below must see
+	// it, which is what actually pins "after degradation the **raw bytes** continue to be parsed".
 	raw := append([]byte(`<html><body><p>MARKER</p>`), 0xD6, 0xD0, 0xCE, 0xC4)
 	raw = append(raw, []byte(`</body></html>`)...)
 
 	md, pages, err := ParseHTMLBytesToMarkdownWithCharset(context.Background(), raw, "x.html", "koi8-r")
 	if err != nil {
-		t.Fatalf("解码失败应降级为原始字节继续解析，不应向上返回错误，got %v", err)
+		t.Fatalf("decode failure should degrade to parsing the raw bytes, not return an error, got %v", err)
 	}
 	if pages != 1 {
 		t.Errorf("pages = %d, want 1", pages)
 	}
-	// 断言 MARKER 出现，而**不是**只断言非空：只断言 len(md) > 0 时，把 :57 的
-	// decoded = htmlBytes 换成 decoded = []byte("<p>x</p>")（原始字节被完全丢弃）照样全绿
-	// ——「非空」这个断言此前能否杀掉 decoded=nil，只是「md 恰好为空」的副产品，并没有
-	// 兑现这条测试注释所声称的契约（评审实测确认，X23）。
+	// Assert MARKER appears, **not** merely non-empty: with only len(md) > 0,
+	// replacing :57's decoded = htmlBytes with decoded = []byte("<p>x</p>")
+	// (raw bytes fully discarded) still passes — whether "non-empty" could kill
+	// decoded=nil was only a side effect of "md happens to be empty", not the
+	// contract this test's comment claims (verified in review, X23).
 	if !strings.Contains(md, "MARKER") {
-		t.Errorf("降级路径必须继续用原始字节解析：输出里找不到原始字节中的锚点 MARKER，got %q"+
-			"（等价于 decoded=nil，或 decoded 被换成了别的字节）", md)
+		t.Errorf("the degradation path must keep parsing the raw bytes: the raw-byte anchor MARKER is missing from the output, got %q"+
+			" (equivalent to decoded=nil, or decoded replaced with other bytes)", md)
 	}
-	// 乱码字节照旧不比对内容：把它们固化成期望值会在无害实现变动（如换页数公式）时误报。
-	// 「原始字节确实进了 DOM」由上面的 MARKER 锚点负责，它才是这条测试注释的兑现方式。
+	// Mojibake bytes are still not content-compared: freezing them as expected
+	// values would false-alarm on harmless implementation changes (e.g. a new
+	// page-count formula). "The raw bytes really entered the DOM" is the MARKER
+	// anchor's job; that is how this test's comment is honored.
 	if len(md) == 0 {
-		t.Error("降级路径必须继续用原始字节解析出内容，got 空 markdown（等价于 decoded=nil）")
+		t.Error("the degradation path must keep producing content from the raw bytes, got empty markdown (equivalent to decoded=nil)")
 	}
 }
 
-// TestGetCharsetDecoder_UnsolvableLabels 锁定**刻意不加**的编码族。
+// TestGetCharsetDecoder_UnsolvableLabels pins the charset families **deliberately not added**.
 //
-// 单字节西欧/西里尔编码能解任意字节，一旦进查表，「不可解」这个信号就消失，
-// 回退 <meta> 探测的分支（以及「meta 也不可解时报错」的观测口径）就再不会被走到。
-// 用户只拍板了 latin-1/1252 这一组，其余单字节编码必须保持不可解。
+// Single-byte Western/Cyrillic encodings decode any bytes; once in the table,
+// the "undecodable" signal disappears and the <meta>-fallback branch (and the
+// "meta also undecodable → error" observability) would never be reached again.
+// The user only signed off on the latin-1/1252 group; all other single-byte
+// encodings must stay undecodable.
 //
-// "utf-8"/"utf8" 一并列入：utf-8 的语义是「原样返回」，由 DecodeHTMLBytes 特判，
-// 不该也不能由 getCharsetDecoder 返回一个 decoder 来表达。
+// "utf-8"/"utf8" are included: utf-8 means "return as-is", special-cased in
+// DecodeHTMLBytes; it should not and cannot be expressed by getCharsetDecoder returning a decoder.
 func TestGetCharsetDecoder_UnsolvableLabels(t *testing.T) {
 	for _, label := range []string{
 		"koi8-r", "koi8-u", "iso-8859-2", "iso-8859-5", "iso-8859-15",
 		"windows-1251", "cp1251", "macintosh", "", "utf-8", "utf8",
 	} {
 		if dec := getCharsetDecoder(label); dec != nil {
-			t.Errorf("getCharsetDecoder(%q) 必须为 nil（不在扩展集合内）", label)
+			t.Errorf("getCharsetDecoder(%q) must be nil (not in the extended set)", label)
 		}
 	}
 }
 
-// TestIsUTF8Charset_RejectsNonUTF8Labels 钉住 isUTF8Charset 的**排除侧**：
-// 白名单之外的 label 必须一律返回 false。
+// TestIsUTF8Charset_RejectsNonUTF8Labels pins isUTF8Charset's **exclusion side**:
+// labels outside the whitelist must all return false.
 //
-// 缺口是实测出来的：往 :112 的 case 列表里加 "gb2312"（X26）或 "big5"（X27）后，
-// 扩展提交新增的 280 行测试**全绿**——此前没有任何断言检查过「非 UTF-8 的 label 必须
-// 返回 false」，测试对那一行的存在理由零检测力。
-// 后果不轻：这两族页面会从「按 gbk/big5 正确解码」静默变成「原样返回乱码字节、
-// 不报错、无告警」（isUTF8Charset 为 true 直接短路返回原字节）。
+// The gap was measured: adding "gb2312" (X26) or "big5" (X27) to the case list
+// at :112 kept the extension commit's 280 new test lines **all green** — no
+// assertion ever checked "non-UTF-8 labels must return false", so the tests had
+// zero detection power for that line's reason to exist.
+// The consequence is serious: pages of those two families would silently go
+// from "correctly decoded as gbk/big5" to "raw mojibake bytes returned, no
+// error, no warning" (isUTF8Charset true short-circuits to the original bytes).
 //
-// 白名单**内侧**（utf-8 及 utf8 / unicode-1-1-utf-8 别名）由 TestDecodeHTMLBytes_UTF8Aliases 覆盖。
+// The whitelist **inside** (utf-8 plus the utf8 / unicode-1-1-utf-8 aliases) is covered by TestDecodeHTMLBytes_UTF8Aliases.
 func TestIsUTF8Charset_RejectsNonUTF8Labels(t *testing.T) {
 	for _, l := range []string{"gbk", "gb2312", "gb18030", "big5", "shift_jis", "euc-jp",
 		"iso-2022-jp", "euc-kr", "iso-8859-1", "koi8-r", ""} {
 		if isUTF8Charset(l) {
-			t.Errorf("isUTF8Charset(%q) 必须为 false", l)
+			t.Errorf("isUTF8Charset(%q) must be false", l)
 		}
 	}
 }
 
-// TestDecodeHTMLBytes_ExtendedCharsetsDecode 覆盖扩展后每个 label 的解码**去向**：
-// 用真实编码字节构造 fixture，断言解出原文。wire 错了编码族（例如 shift_jis 接到 EUCJP）
-// 必然解不出原文，断言会失败。
+// TestDecodeHTMLBytes_ExtendedCharsetsDecode covers the decode **target** of every
+// extended label: fixtures use real encoded bytes, asserting the original text
+// decodes. Wiring the wrong family (e.g. shift_jis to EUCJP) necessarily fails
+// to produce the original text, and the assertion fails.
 func TestDecodeHTMLBytes_ExtendedCharsetsDecode(t *testing.T) {
 	const ja = "日本語のテスト"
 	const ko = "한국어 테스트"
@@ -437,20 +465,22 @@ func TestDecodeHTMLBytes_ExtendedCharsetsDecode(t *testing.T) {
 				t.Fatalf("hint %q: %v", c.label, err)
 			}
 			if !strings.Contains(string(got), c.text) {
-				t.Errorf("hint %q 必须解出 %q，got %q", c.label, c.text, got)
+				t.Errorf("hint %q must decode to %q, got %q", c.label, c.text, got)
 			}
 		})
 	}
 }
 
-// TestDecodeHTMLBytes_WesternLatin1IsWindows1252 锁定「西欧一律映射到 windows-1252」这一决策。
+// TestDecodeHTMLBytes_WesternLatin1IsWindows1252 pins the "Western always maps to windows-1252" decision.
 //
-// 按 WHATWG 编码标准（也是浏览器的行为），HTTP/HTML 里的 iso-8859-1 label 实际就该按
-// windows-1252 解：否则 0x80–0x9F 区间的弯引号会变成 C1 控制符（U+0093）而不是 “ (U+201C)。
-// 若把它错接到 charmap.ISO8859_1，0xE9 (é) 之类的字节仍然正确，**只有** 0x80–0x9F 能区分，
-// 所以 fixture 必须含弯引号——这条断言正是用来区分这两个解码器的。
+// Per the WHATWG Encoding Standard (and browser behavior), the iso-8859-1 label
+// in HTTP/HTML should actually decode as windows-1252: otherwise curly quotes in
+// 0x80–0x9F become C1 control codes (U+0093) instead of “ (U+201C).
+// Miswiring it to charmap.ISO8859_1 keeps bytes like 0xE9 (é) correct — **only**
+// 0x80–0x9F distinguishes — so the fixture must contain curly quotes; that is
+// exactly what this assertion separates the two decoders by.
 func TestDecodeHTMLBytes_WesternLatin1IsWindows1252(t *testing.T) {
-	// windows-1252 字节：caf<0xE9> <0x93>r<0xE9>sum<0xE9><0x94> = café “résumé”
+	// windows-1252 bytes: caf<0xE9> <0x93>r<0xE9>sum<0xE9><0x94> = café “résumé”
 	raw := append([]byte(`<p>caf`), 0xE9, 0x20, 0x93, 'r', 0xE9, 's', 'u', 'm', 0xE9, 0x94)
 	raw = append(raw, []byte(`</p>`)...)
 	const want = "café “résumé”"
@@ -464,50 +494,56 @@ func TestDecodeHTMLBytes_WesternLatin1IsWindows1252(t *testing.T) {
 			t.Fatalf("hint %q: %v", hint, err)
 		}
 		if !strings.Contains(string(got), want) {
-			t.Errorf("hint %q 必须按 windows-1252 解出 %q，got %q", hint, want, got)
+			t.Errorf("hint %q must decode as windows-1252 into %q, got %q", hint, want, got)
 		}
 		if strings.ContainsRune(string(got), '\u0093') {
-			t.Errorf("hint %q 不能按 ISO-8859-1 解（0x93 变成 C1 控制符 U+0093），got %q", hint, got)
+			t.Errorf("hint %q must not decode as ISO-8859-1 (0x93 becomes C1 control U+0093), got %q", hint, got)
 		}
 	}
 }
 
-// TestDecodeHTMLBytes_WesternLabelOnUTF8BytesIsMojibake 显式钉住一个**已知代价**，不是 bug。
+// TestDecodeHTMLBytes_WesternLabelOnUTF8BytesIsMojibake explicitly pins a
+// **known cost**, not a bug.
 //
-// 把 iso-8859-1/windows-1252 加进查表，堵死了 /v1/pdfparse 唯一的恢复路径
-// 「解码报错 → 用原始字节继续解析」：单字节编码能解任意字节，不再报错。
-// 于是「<meta> 声明旧西欧编码、字节实为 UTF-8」的页面，从此前侥幸解出的正确文本
-// 变成静默乱码（无 error、无 warn）。用户已权衡后选择保留（收益是真实旧西欧编码
-// 页面能被解出）。
+// Adding iso-8859-1/windows-1252 to the table closed /v1/pdfparse's only
+// recovery path "decode error → continue with raw bytes": single-byte encodings
+// decode any bytes, so they no longer error. Pages with "<meta> declaring an old
+// Western charset but bytes actually UTF-8" thus go from previously lucky
+// correct text to silent mojibake (no error, no warn). The user weighed this
+// and chose to keep it (the gain is real old-Western-charset pages decoding).
 //
-// 若有人让这条测试失败，那不是发现 bug，而是**有意改变该权衡**——请先回读设计 §8.11。
+// If someone makes this test fail, that is not finding a bug but **deliberately
+// changing the trade-off** — re-read design §8.11 first.
 func TestDecodeHTMLBytes_WesternLabelOnUTF8BytesIsMojibake(t *testing.T) {
-	// 字节是 UTF-8 且含中文，meta 却声明 iso-8859-1。
+	// Bytes are UTF-8 Chinese, but meta declares iso-8859-1.
 	utf8Bytes := []byte(`<meta charset="iso-8859-1"><p>中文内容</p>`)
 
-	// 三个 hint 都必须覆盖："" 走 <meta> 探测，两个显式西欧 label 走 hint 分支——
-	// 是两条不同的代码路径，都得钉住。
+	// All three hints must be covered: "" takes the <meta> probing path, the two
+	// explicit Western labels take the hint path — two different code paths, both must be pinned.
 	for _, hint := range []string{"", "iso-8859-1", "windows-1252"} {
 		got, err := DecodeHTMLBytes(utf8Bytes, hint)
 		if err != nil {
-			t.Fatalf("hint %q: 单字节编码不应报错，got %v", hint, err)
+			t.Fatalf("hint %q: single-byte encodings must not error, got %v", hint, err)
 		}
-		// 负向断言在这里是**恰当**的：单字节解码必然成功且必然产出非中文，
-		// 不存在「用错解码器也恰好通过」的空转风险。
+		// A negative assertion is **appropriate** here: single-byte decoding
+		// always succeeds and always yields non-Chinese, so there is no
+		// "wrong decoder also passes" no-op risk.
 		if strings.Contains(string(got), "中文内容") {
-			t.Errorf("hint %q: 该 fixture 应当解成乱码（已拍板的代价）；"+
-				"若这条失败，说明权衡被有意改变了，请先回读设计 §8.11", hint)
+			t.Errorf("hint %q: this fixture should decode to mojibake (the signed-off cost); "+
+				"if this fails, the trade-off was deliberately changed — re-read design §8.11 first", hint)
 		}
 	}
 }
 
-// TestDecodeHTMLBytes_UTF8Aliases 覆盖 UTF-8 的无短横线别名。
+// TestDecodeHTMLBytes_UTF8Aliases covers UTF-8's hyphen-less aliases.
 //
-// 缺口是实测出来的：DecodeHTMLBytes 只特判 "utf-8"，而 HTTP 头写 charset=utf8 很常见。
-// 没有别名时 "utf8" 会被判为「不可解」并回退到 <meta>，一个声明 utf-8 的页面会被按
-// meta 里的另一种编码误解——本条 fixture 让 meta 谎称 gbk，正好把这个回退变成乱码。
+// The gap was measured: DecodeHTMLBytes only special-cased "utf-8", while
+// charset=utf8 is common in HTTP headers. Without the aliases, "utf8" would be
+// judged "undecodable" and fall back to <meta>, so a page declaring utf-8 gets
+// misdecoded per meta's other charset — this fixture has meta lying with gbk,
+// turning exactly that fallback into mojibake.
 func TestDecodeHTMLBytes_UTF8Aliases(t *testing.T) {
-	// 字节是 UTF-8 且含中文，meta 谎称 gbk。
+	// Bytes are UTF-8 Chinese, meta lies with gbk.
 	data := []byte(`<meta charset="gbk"><p>中文内容</p>`)
 
 	for _, hint := range []string{
@@ -518,28 +554,33 @@ func TestDecodeHTMLBytes_UTF8Aliases(t *testing.T) {
 			t.Fatalf("hint %q: %v", hint, err)
 		}
 		if !bytes.Equal(got, data) {
-			t.Errorf("hint %q 应视为 utf-8（原样返回、不看 meta），got %q", hint, got)
+			t.Errorf("hint %q should be treated as utf-8 (returned as-is, meta ignored), got %q", hint, got)
 		}
 	}
 
-	// 对照：没有别名语义时上面会退到 meta 的 gbk 解出乱码——证明该 fixture 能区分
-	// 「utf-8 别名」与「不可解 → 回退 meta」两条路径。
+	// Control: without alias semantics the loop above would fall back to meta's
+	// gbk and produce mojibake — proving the fixture distinguishes "utf-8 alias"
+	// from "undecodable → fall back to meta".
 	viaMeta, err := DecodeHTMLBytes(data, "")
 	if err != nil {
 		t.Fatalf("no-hint decode error: %v", err)
 	}
 	if bytes.Equal(viaMeta, data) {
-		t.Error("fixture 失效：无 hint 时也原样返回，无法区分 utf-8 别名与 meta 回退")
+		t.Error("fixture broken: returned as-is even without a hint; cannot distinguish utf-8 aliases from the meta fallback")
 	}
 }
 
-// TestParseHTMLBytesToMarkdownWithCharset_HintIsUsedAsDecoder 锁定**包装入口转发 hint**。
+// TestParseHTMLBytesToMarkdownWithCharset_HintIsUsedAsDecoder pins that the
+// **wrapper entry forwards the hint**.
 //
-// 缺口是实测出来的：ParseHTMLBytesToMarkdownWithCharset 是 Fetcher 要调用的生产入口，
-// 但既有测试只喂过 "utf-8"、""、不可解 hint 三种——恰好都不能区分「转发 hint」与
-// 「丢弃 hint（把 :49 的 charsetHint 换成 ""）」，该变异此前全包全绿。
+// The gap was measured: ParseHTMLBytesToMarkdownWithCharset is the production
+// entry the Fetcher calls, but existing tests only fed "utf-8", "", and an
+// undecodable hint — none of which distinguishes "forward the hint" from
+// "discard the hint (replace charsetHint with \"\" at :49)"; that mutation was
+// previously all-green across the package.
 //
-// fixture 刻意让 <meta> 谎称 big5：只有真的把可解的 hint 当解码来源用，才能解出中文。
+// The fixture deliberately has <meta> lie with big5: only genuinely using the
+// decodable hint as the decode source produces the Chinese.
 func TestParseHTMLBytesToMarkdownWithCharset_HintIsUsedAsDecoder(t *testing.T) {
 	body := append([]byte(`<html><head><meta charset="big5"></head><body><p>`),
 		encodeWith(t, "中文内容", simplifiedchinese.GBK.NewEncoder())...)
@@ -550,22 +591,23 @@ func TestParseHTMLBytesToMarkdownWithCharset_HintIsUsedAsDecoder(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.Contains(md, "中文内容") {
-		t.Errorf("包装入口必须把可解的 hint 转发给解码器（hint=gbk），got %q", md)
+		t.Errorf("the wrapper entry must forward the decodable hint to the decoder (hint=gbk), got %q", md)
 	}
 
-	// 对照：丢弃 hint 时按 meta 的 big5 解，中文必然解不出。
+	// Control: discarding the hint decodes per meta's big5, so the Chinese necessarily fails to decode.
 	mdNoHint, _, err := ParseHTMLBytesToMarkdownWithCharset(context.Background(), body, "x.html", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if strings.Contains(mdNoHint, "中文内容") {
-		t.Error("fixture 失效：丢弃 hint 也解出了中文，无法区分 hint 是否被转发")
+		t.Error("fixture broken: Chinese decoded even with the hint discarded; cannot tell whether the hint was forwarded")
 	}
 }
 
-// TestDetectHTMLCharset_UppercaseMeta 覆盖正则里的 (?i)：属性名与取值大小写混排也必须认出来。
-// 既有 fixture 全是小写，(?i) 此前零覆盖。
-// 返回值**不做**大小写归一化（由 getCharsetDecoder 统一 ToLower），所以这里是原样断言。
+// TestDetectHTMLCharset_UppercaseMeta covers the regex's (?i): mixed-case
+// attribute names and values must be recognized. Existing fixtures were all
+// lowercase, so (?i) had zero coverage. The return value is **not**
+// case-normalized (getCharsetDecoder does the ToLower), so assert as-is.
 func TestDetectHTMLCharset_UppercaseMeta(t *testing.T) {
 	cases := []struct {
 		in   string
@@ -583,51 +625,58 @@ func TestDetectHTMLCharset_UppercaseMeta(t *testing.T) {
 	}
 }
 
-// TestDetectHTMLCharset_MultipleDeclarations 覆盖页面里有多个 <meta> 声明的情形：
-// detectHTMLCharset 用 FindSubmatch 取**首个**，与 HTML 规范一致（第一个声明生效）。
-// 此前零覆盖——改成取最后一个同样全绿。
+// TestDetectHTMLCharset_MultipleDeclarations covers pages with multiple <meta>
+// declarations: detectHTMLCharset takes the **first** via FindSubmatch, matching
+// the HTML spec (first declaration wins). Previously zero coverage — taking the
+// last one was equally green.
 func TestDetectHTMLCharset_MultipleDeclarations(t *testing.T) {
 	utf8First := `<html><head><meta charset="utf-8"><meta charset="gbk"></head></html>`
 	if got := detectHTMLCharset([]byte(utf8First)); !strings.EqualFold(got, "utf-8") {
-		t.Errorf("多个声明必须取首个（utf-8），got %q", got)
+		t.Errorf("multiple declarations must take the first (utf-8), got %q", got)
 	}
 
 	gbkFirst := `<html><head><meta charset="gbk"><meta charset="utf-8"></head></html>`
 	if got := detectHTMLCharset([]byte(gbkFirst)); !strings.EqualFold(got, "gbk") {
-		t.Errorf("多个声明必须取首个（gbk），got %q", got)
+		t.Errorf("multiple declarations must take the first (gbk), got %q", got)
 	}
 }
 
-// TestDetectHTMLCharset_AttributeForms 覆盖 charset 声明的各种合法书写形式，
-// 重点是 HTML5 推荐的短式**单引号**写法 <meta charset='gbk'>。
+// TestDetectHTMLCharset_AttributeForms covers the various legal spellings of the
+// charset declaration, especially the HTML5-recommended short form with
+// **single quotes** <meta charset='gbk'>.
 //
-// 缺口是实测出来的（与父提交一致）：旧正则 (?i)charset[="\s]+([a-zA-Z0-9_-]+) 里
-// `charset='gbk'` 的取值前那个 `'` 不在字符类内，匹配不到 → detectHTMLCharset 返回 ""
-// → 整页 GBK 字节**静默**原样进 markdown（无 error、无 warn）。而 /v1/pdfparse 这条
-// 路径没有下游编码兜底（internal/service/parser.go、internal/parse/mhtml_parser.go），
-// 后果就是静默乱码。
+// The gap was measured (consistent with the parent commit): in the old regex
+// (?i)charset[="\s]+([a-zA-Z0-9_-]+) the `'` before `charset='gbk'`'s value was
+// not in the character class, so it didn't match → detectHTMLCharset returned ""
+// → the whole page's GBK bytes went into markdown **silently** as-is (no error,
+// no warn). And the /v1/pdfparse path has no downstream encoding fallback
+// (internal/service/parser.go, internal/parse/mhtml_parser.go), so the result
+// was silent mojibake.
 func TestDetectHTMLCharset_AttributeForms(t *testing.T) {
 	cases := []struct {
 		name string
 		in   string
 		want string
 	}{
-		{"双引号", `<meta charset="gbk">`, "gbk"},
-		{"单引号", `<meta charset='gbk'>`, "gbk"},
-		{"无引号", `<meta charset=gbk>`, "gbk"},
-		{"等号两侧空白", `<meta charset = "gbk">`, "gbk"},
-		{"等号左侧换行", "<meta charset\n=\t'gbk'>", "gbk"},
-		{"http-equiv 双引号长式", `<meta http-equiv="Content-Type" content="text/html; charset=gbk">`, "gbk"},
-		{"http-equiv 单引号长式", `<meta http-equiv='Content-Type' content='text/html; charset=gbk'>`, "gbk"},
-		{"无声明", `<html><body><p>no charset here</p></body></html>`, ""},
-		// 反向：非属性位置的 charset 不得被误捕获。
-		// 这条正是为了挡住「往字符类里加 ' 」那种改法——它会把 `charset's` 的 `'s`
-		// 捕获成取值 "s"，然后在下游触发一次 unsupported charset 报错（或按 "s" 解）。
-		{"正文里的 charset's 不得误匹配", `<p>the charset's value is utf-8</p>`, ""},
-		// 正文散文里的「charset + 一个**可解**的编码名」不得被当成声明——这是本次修复
-		// 危害最大的一类：探测出 "gb2312" 会被真的拿去解码整页，静默乱码。
-		// 上面那条 `charset's` 只挡住了 label 不含任何合法编码名的弱变体。
-		{"正文里的 charset gb2312 不得误匹配", `<p>charset gb2312 is good</p>`, ""},
+		{"double quotes", `<meta charset="gbk">`, "gbk"},
+		{"single quotes", `<meta charset='gbk'>`, "gbk"},
+		{"no quotes", `<meta charset=gbk>`, "gbk"},
+		{"whitespace around =", `<meta charset = "gbk">`, "gbk"},
+		{"newline before =", "<meta charset\n=\t'gbk'>", "gbk"},
+		{"http-equiv long form, double quotes", `<meta http-equiv="Content-Type" content="text/html; charset=gbk">`, "gbk"},
+		{"http-equiv long form, single quotes", `<meta http-equiv='Content-Type' content='text/html; charset=gbk'>`, "gbk"},
+		{"no declaration", `<html><body><p>no charset here</p></body></html>`, ""},
+		// Negative: charset in non-attribute position must not be mis-captured.
+		// This case exists to block the "add ' to the character class" fix — it
+		// would capture `charset's`'s `'s` as the value "s", then trigger an
+		// unsupported charset error downstream (or decode as "s").
+		{"charset's in prose must not match", `<p>the charset's value is utf-8</p>`, ""},
+		// "charset + a **decodable** encoding name" in prose must not count as a
+		// declaration — the most damaging class for this fix: detecting "gb2312"
+		// would really decode the whole page with it, silent mojibake. The
+		// `charset's` case above only blocks the weak variant whose label
+		// contains no legal encoding name.
+		{"charset gb2312 in prose must not match", `<p>charset gb2312 is good</p>`, ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -638,41 +687,45 @@ func TestDetectHTMLCharset_AttributeForms(t *testing.T) {
 	}
 }
 
-// TestDetectHTMLCharset_WindowClamp 锁定 detectHTMLCharset 只扫**前 4096 字节**这个 clamp。
+// TestDetectHTMLCharset_WindowClamp pins detectHTMLCharset's clamp to scanning only the **first 4096 bytes**.
 //
-// clamp 挡住的是「正文深处出现的 charset=… 被误读成声明」——比如一篇引用了
-// `charset=gb2312` 的长文，若扫描整篇就会把散文当成声明，进而按错误的编码解码整页。
-// 把 `len(head) > 4096` 放大到 `> 99999999`（等于去掉 clamp）此前全绿：
-// 既有的 fixture 里没有一条声明的落点在窗口之外。
+// The clamp blocks "charset=… deep in body prose being misread as a
+// declaration" — e.g. a long article quoting `charset=gb2312`; scanning the
+// whole page would treat prose as a declaration and decode the entire page with
+// the wrong charset. Enlarging `len(head) > 4096` to `> 99999999` (removing the
+// clamp) was previously all-green: no existing fixture has a declaration
+// landing outside the window.
 //
-// 填充用 strings.Repeat 生成，不把 4KB 字面量写进源码。
+// Padding is generated with strings.Repeat, not a 4KB literal in source.
 func TestDetectHTMLCharset_WindowClamp(t *testing.T) {
-	const pad = "<!-- pad -->" // 12 字节
+	const pad = "<!-- pad -->" // 12 bytes
 
-	// 声明落在 4096 字节之外 → 探测不到。
+	// Declaration lands beyond 4096 bytes → must not be detected.
 	outside := `<html><head>` + strings.Repeat(pad, 400) +
 		`<meta charset="gbk"></head><body></body></html>`
 	if len(outside) <= 4096 {
-		t.Fatalf("fixture 失效：整段只有 %d 字节，声明没有落在 4096 窗口之外", len(outside))
+		t.Fatalf("fixture broken: only %d bytes total; the declaration did not land outside the 4096 window", len(outside))
 	}
 	if got := detectHTMLCharset([]byte(outside)); got != "" {
-		t.Errorf("窗口之外的 <meta charset> 不得被读到，got %q", got)
+		t.Errorf("<meta charset> outside the window must not be read, got %q", got)
 	}
 
-	// 对照：同一份声明落在窗口**之内**必须被读到。少了这条，上面那句在「fixture 本身
-	// 损坏 / 正则根本不匹配」的实现下也会通过，等于空转。
+	// Control: the same declaration **inside** the window must be read. Without
+	// this, the check above would also pass under "fixture itself broken / regex
+	// matches nothing" implementations — a no-op.
 	inside := `<html><head>` + strings.Repeat(pad, 10) +
 		`<meta charset="gbk"></head><body></body></html>`
 	if got := detectHTMLCharset([]byte(inside)); !strings.EqualFold(got, "gbk") {
-		t.Errorf("窗口之内的同一份声明必须被读到（对照），got %q", got)
+		t.Errorf("the same declaration inside the window must be read (control), got %q", got)
 	}
 }
 
-// TestDecodeHTMLBytes_SingleQuotedMetaCharset 端到端锁定单引号 <meta charset='gbk'>：
-// 真实 GBK 字节必须被解出中文，而不是静默原样（乱码）返回。
+// TestDecodeHTMLBytes_SingleQuotedMetaCharset pins single-quoted <meta charset='gbk'>
+// end to end: real GBK bytes must decode to Chinese, not silently return as-is (mojibake).
 //
-// fixture 刻意用**真实 GBK 字节**而非 ASCII：ASCII 在 GBK 下是透明的，「解错」与
-// 「完全没解」两种实现下 ASCII fixture 都照样通过，断言会退化成空转。
+// The fixture deliberately uses **real GBK bytes**, not ASCII: ASCII is
+// transparent under GBK, so under both "wrong decode" and "no decode at all"
+// implementations an ASCII fixture passes and the assertion degenerates into a no-op.
 func TestDecodeHTMLBytes_SingleQuotedMetaCharset(t *testing.T) {
 	body := append([]byte(`<html><head><meta charset='gbk'></head><body><p>`),
 		encodeWith(t, "中文内容", simplifiedchinese.GBK.NewEncoder())...)
@@ -683,6 +736,6 @@ func TestDecodeHTMLBytes_SingleQuotedMetaCharset(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.Contains(string(got), "中文内容") {
-		t.Errorf("单引号 <meta charset='gbk'> 必须被探测到并按 GBK 解码，got %q", got)
+		t.Errorf("single-quoted <meta charset='gbk'> must be detected and decoded as GBK, got %q", got)
 	}
 }

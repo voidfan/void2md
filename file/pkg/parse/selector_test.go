@@ -8,9 +8,9 @@ import (
 	"golang.org/x/net/html"
 )
 
-// fixtureBody 是 selectorFixture 的 <body> 内容，单独抽出供对拍测试使用
-// （设计 §1.1）：对拍必须比较**同一份子树**的两种投递方式，
-// 若两侧内容不同，断言必然失败。
+// fixtureBody is selectorFixture's <body> content, extracted for the
+// cross-check test (design §1.1): the cross-check must compare two delivery
+// paths of **the same subtree**; differing content would fail the assertion.
 const fixtureBody = `<nav><a href="/a">A</a></nav>` +
 	`<div id="main" class="docs-content" data-kind="guide"><h1>Hello</h1><p>World</p></div>` +
 	`<div class="docs-content">second</div>`
@@ -18,33 +18,35 @@ const fixtureBody = `<nav><a href="/a">A</a></nav>` +
 const selectorFixture = `<html><head><title>My Docs Title</title></head><body>` +
 	fixtureBody + `</body></html>`
 
-// bodyOnlyDoc 只含同一份 body 内容，等价于「把这棵子树当成一个 .html 文件
-// 交给 /v1/pdfparse」。它与 selectorFixture 的差异只在 <head><title>。
+// bodyOnlyDoc holds only the same body content, equivalent to "handing this
+// subtree to /v1/pdfparse as a .html file". It differs from selectorFixture only in <head><title>.
 const bodyOnlyDoc = `<html><body>` + fixtureBody + `</body></html>`
 
 func TestSelectHTML_BasicSelectors(t *testing.T) {
 	tests := []struct {
 		name     string
 		selector string
-		want     string // 期望序列化结果中的必需子串
-		absent   string // 期望**不**出现的子串
+		want     string // required substring of the serialized result
+		absent   string // substring that must **not** appear
 	}{
 		{"tag", "h1", "<h1>Hello</h1>", "World"},
 		{"id", "#main", "World", "second"},
 		{"class", ".docs-content", "<h1>Hello</h1>", ""},
 		{"descendant", "div p", "World", "second"},
 		{"attribute", `[data-kind="guide"]`, "World", "second"},
-		// cascadia 的 MatchFirst 返回**文档序**首个命中节点，而非「第一个选择器的命中」。
-		// fixture 中 <nav> 在 <h1> 之前，故 "nav, h1" 命中 <nav>。
-		// 下面第二条把选择器顺序**反过来**（"h1, nav"）仍断言 <nav>——
-		// 这才真正证明了「与选择器书写顺序无关」，而单条 "nav, h1" 无法区分
-		// 「文档序」与「恰好第一个选择器也先出现」两种解释。
+		// cascadia's MatchFirst returns the first hit in **document order**, not
+		// "the first selector's hit". In the fixture <nav> precedes <h1>, so
+		// "nav, h1" matches <nav>. The second case **reverses** the selector
+		// order ("h1, nav") and still asserts <nav> — that is what proves
+		// independence from selector order; a single "nav, h1" case cannot
+		// distinguish "document order" from "the first selector happens to come first".
 		{"comma multi returns first in document order", "nav, h1", "<nav>", ""},
 		{"comma multi ignores selector order", "h1, nav", "<nav>", "Hello"},
 		{"default is body", "", "<nav>", ""},
-		// selector 只含空白时同样走默认值 "body"（设计 §2.1）：实现靠
-		// strings.TrimSpace(selector) 兑现，而 {"selector": "   "} 是客户端可以不经验证
-		// 直接送进来的取值。此前零覆盖——把它换成 no-op 能活过整个包套件。
+		// A whitespace-only selector also defaults to "body" (design §2.1):
+		// implemented via strings.TrimSpace(selector), and {"selector": "   "} is
+		// a value clients can send unvalidated. Previously zero coverage —
+		// replacing it with a no-op survived the whole package suite.
 		{"default is body for whitespace-only", "   \t\n ", "<nav>", ""},
 	}
 	for _, tt := range tests {
@@ -63,8 +65,9 @@ func TestSelectHTML_BasicSelectors(t *testing.T) {
 	}
 }
 
-// TestSelectHTML_NoMatch 锁定评审问题 #5 的底层行为：零匹配返回空字节且不报错。
-// 上层据此走「空页规则」（设计 §4.2 第 7 步）跳过该页。
+// TestSelectHTML_NoMatch pins the behavior behind review issue #5: zero matches
+// returns empty bytes without error. The layer above then applies the
+// "empty page rule" (design §4.2 step 7) to skip the page.
 func TestSelectHTML_NoMatch(t *testing.T) {
 	got, err := SelectHTML([]byte(selectorFixture), ".does-not-exist")
 	if err != nil {
@@ -75,34 +78,36 @@ func TestSelectHTML_NoMatch(t *testing.T) {
 	}
 }
 
-// TestSelectHTML_InvalidSelector 除了「必须报错」外，还锁定 cascadia.Compile 的**错误包装**：
-// 错误里必须带上出错的 selector（selector.go 的 fmt.Errorf("invalid selector %q: %w")）。
-// 只断言 err != nil 时，把包装整个换成 `return nil, err` 的变异能存活，
-// 「错误信息里带上出错的 selector」这个承诺就无人守。
+// TestSelectHTML_InvalidSelector, beyond "must error", pins cascadia.Compile's
+// **error wrapping**: the error must carry the offending selector
+// (fmt.Errorf("invalid selector %q: %w") in selector.go). Asserting only
+// err != nil lets a mutation replacing the wrap with `return nil, err` survive,
+// leaving the "error names the bad selector" promise unguarded.
 func TestSelectHTML_InvalidSelector(t *testing.T) {
 	_, err := SelectHTML([]byte(selectorFixture), "div >>>> p")
 	if err == nil {
 		t.Fatal("invalid selector should return error")
 	}
 	if !strings.Contains(err.Error(), "invalid selector") {
-		t.Errorf("错误必须包装出错的 selector（含 \"invalid selector\" 前缀），got %q", err)
+		t.Errorf("error must wrap the offending selector (with the \"invalid selector\" prefix), got %q", err)
 	}
 }
 
-// TestSelectHTML_MatchesSubtreeRender —— 设计 §1.1 的对拍口径。
+// TestSelectHTML_MatchesSubtreeRender — the cross-check of design §1.1.
 //
-// 断言：把 <body> 子树单独交给渲染器，与「整文档裁剪出 body 再交给渲染器」，
-// 输出逐字节相同。即两个接口的渲染逻辑是同一个，差异只来自输入范围。
+// Asserts: rendering the <body> subtree standalone is byte-identical to
+// "scoping body out of the full document, then rendering". I.e. both interfaces
+// share one rendering path; the only difference is input scope.
 func TestSelectHTML_MatchesSubtreeRender(t *testing.T) {
 	ctx := context.Background()
 
-	// 左：把同一份 body 子树当独立文档渲染（等价 /v1/pdfparse 上传该子树）
+	// Left: render the same body subtree as a standalone document (equivalent to /v1/pdfparse upload)
 	want, _, err := ParseHTMLBytesToMarkdown(ctx, []byte(bodyOnlyDoc), "x.html")
 	if err != nil {
 		t.Fatalf("direct render error: %v", err)
 	}
 
-	// 右：从整文档裁剪出 body，再走同一个渲染器（/v1/htmlparse 的路径）
+	// Right: scope body out of the full document, then use the same renderer (the /v1/htmlparse path)
 	scoped, err := SelectHTML([]byte(selectorFixture), "body")
 	if err != nil {
 		t.Fatalf("SelectHTML error: %v", err)
@@ -117,10 +122,10 @@ func TestSelectHTML_MatchesSubtreeRender(t *testing.T) {
 	}
 }
 
-// TestSelectHTML_TitleLeakDocumentsTheCorrection 钉住 §1.1 修正的机制：
-// 整文档直调会把 <title> 文本当正文，body 裁剪则不会。
-// 若将来有人给 renderNode 补上 head/title 分支，这条测试会失败，
-// 提醒他设计文档 §1.1 与 §8.3 的取舍需要重新评估。
+// TestSelectHTML_TitleLeakDocumentsTheCorrection pins the mechanism of the §1.1
+// correction: rendering the full document treats <title> text as content, body
+// scoping does not. If someone later adds a head/title branch to renderNode,
+// this test fails, reminding them that the §1.1/§8.3 trade-off needs re-evaluation.
 func TestSelectHTML_TitleLeakDocumentsTheCorrection(t *testing.T) {
 	ctx := context.Background()
 
@@ -129,7 +134,7 @@ func TestSelectHTML_TitleLeakDocumentsTheCorrection(t *testing.T) {
 		t.Fatalf("full render error: %v", err)
 	}
 	if !strings.Contains(full, "My Docs Title") {
-		t.Fatalf("整文档渲染应包含 <title> 文本（这正是 §1.1 修正的原因），got %q", full)
+		t.Fatalf("full-document render should contain the <title> text (the very reason for the §1.1 correction), got %q", full)
 	}
 
 	scoped, err := SelectHTML([]byte(selectorFixture), "body")
@@ -141,11 +146,11 @@ func TestSelectHTML_TitleLeakDocumentsTheCorrection(t *testing.T) {
 		t.Fatalf("scoped render error: %v", err)
 	}
 	if strings.Contains(bodyMD, "My Docs Title") {
-		t.Errorf("body 裁剪渲染不得包含 <title> 文本, got %q", bodyMD)
+		t.Errorf("body-scoped render must not contain the <title> text, got %q", bodyMD)
 	}
 }
 
-// firstElement 深度优先返回 n 子树中首个指定标签的元素节点；找不到返回 nil。
+// firstElement returns the first element with the given tag in n's subtree (DFS); nil if none.
 func firstElement(n *html.Node, tag string) *html.Node {
 	if n.Type == html.ElementNode && n.Data == tag {
 		return n
@@ -158,16 +163,20 @@ func firstElement(n *html.Node, tag string) *html.Node {
 	return nil
 }
 
-// TestSelectNode_MatchesRootItself 锁定 SelectNode 的**承重语义**：选择器作用于传入节点自身。
+// TestSelectNode_MatchesRootItself pins SelectNode's **load-bearing semantics**:
+// the selector applies to the passed node itself.
 //
-// 实现用的是 cascadia.Selector.MatchFirst（**含**传入节点自身），而不是 cascadia.Query
-// （从子节点起搜、**排除**自身）。两者只在「传入的不是文档根」时才分道扬镳，
-// 所以既有那批只调 SelectHTML（永远传文档根）的测试全都抓不到这个差异——
-// 把 MatchFirst 换成「看起来更干净的」cascadia.Query，整个包套件照样全绿。
+// The implementation uses cascadia.Selector.MatchFirst (**includes** the passed
+// node), not cascadia.Query (starts at children, **excludes** self). The two
+// diverge only when the input is not the document root, so the existing tests
+// that only call SelectHTML (always the document root) cannot catch it —
+// swapping MatchFirst for the "cleaner-looking" cascadia.Query keeps the whole
+// package suite green.
 //
-// 后果不是小事：internal/crawler 复用同一个 DOM 做链接提取与正文裁剪，
-// 子树根自己命中却拿到长度为 0 的字节切片时，上层会按
-// 「selector matched nothing」把整页丢掉。
+// The consequence is not minor: internal/crawler reuses one DOM for link
+// extraction and content scoping; when a subtree root matches itself but gets
+// zero-length bytes back, the layer above drops the whole page as
+// "selector matched nothing".
 func TestSelectNode_MatchesRootItself(t *testing.T) {
 	doc, err := html.Parse(strings.NewReader(selectorFixture))
 	if err != nil {
@@ -175,7 +184,7 @@ func TestSelectNode_MatchesRootItself(t *testing.T) {
 	}
 	body := firstElement(doc, "body")
 	if body == nil {
-		t.Fatal("fixture 失效：解析 selectorFixture 后找不到 <body>")
+		t.Fatal("fixture broken: no <body> found after parsing selectorFixture")
 	}
 
 	got, err := SelectNode(body, "body")
@@ -183,16 +192,17 @@ func TestSelectNode_MatchesRootItself(t *testing.T) {
 		t.Fatalf("SelectNode(body, \"body\") error: %v", err)
 	}
 	if len(got) == 0 {
-		t.Fatal("传入 <body> 子树根、selector 为 \"body\"：子树根自身命中必须返回它自己。" +
-			"返回长度为 0 的字节切片等价于 cascadia.Query（排除自身），上层会据此丢弃整页")
+		t.Fatal("passing the <body> subtree root with selector \"body\": the root matching itself must return itself. " +
+			"Returning zero-length bytes is equivalent to cascadia.Query (excludes self), and the layer above would drop the whole page")
 	}
 	if !strings.Contains(string(got), "World") {
-		t.Errorf("SelectNode(body, \"body\") = %q, want 含传入子树的内容（World）", got)
+		t.Errorf("SelectNode(body, \"body\") = %q, want the passed subtree's content (World)", got)
 	}
 
-	// 只断言非空还不够：排除自身的实现会在**别处**找到同级或后代元素，结果同样非空。
-	// 这棵 fixture 里有两个同名元素，断言结果必须来自传入的那棵子树（id="a"），
-	// 而不是兄弟节点 id="b" 的内容。
+	// Asserting non-empty is not enough: a self-excluding implementation would
+	// find a sibling or descendant element **elsewhere**, also non-empty. This
+	// fixture has two same-tag elements; assert the result comes from the passed
+	// subtree (id="a"), not sibling id="b".
 	siblingDoc, err := html.Parse(strings.NewReader(
 		`<html><body><div id="a">apple</div><div id="b">banana</div></body></html>`))
 	if err != nil {
@@ -200,7 +210,7 @@ func TestSelectNode_MatchesRootItself(t *testing.T) {
 	}
 	divA := firstElement(siblingDoc, "div")
 	if divA == nil || getAttr(divA, "id") != "a" {
-		t.Fatal("fixture 失效：首个 <div> 不是 id=\"a\"")
+		t.Fatal("fixture broken: first <div> is not id=\"a\"")
 	}
 
 	gotA, err := SelectNode(divA, "div")
@@ -208,9 +218,9 @@ func TestSelectNode_MatchesRootItself(t *testing.T) {
 		t.Fatalf("SelectNode(div#a, \"div\") error: %v", err)
 	}
 	if !strings.Contains(string(gotA), `id="a"`) || !strings.Contains(string(gotA), "apple") {
-		t.Errorf("SelectNode(div#a, \"div\") = %q, want 传入子树自身（id=\"a\" / apple）", gotA)
+		t.Errorf("SelectNode(div#a, \"div\") = %q, want the passed subtree itself (id=\"a\" / apple)", gotA)
 	}
 	if strings.Contains(string(gotA), "banana") {
-		t.Errorf("SelectNode(div#a, \"div\") = %q, 不得返回兄弟节点 id=\"b\" 的内容", gotA)
+		t.Errorf("SelectNode(div#a, \"div\") = %q, must not return sibling id=\"b\" content", gotA)
 	}
 }

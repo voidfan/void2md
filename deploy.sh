@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 一键部署：解压 dbx 源码 -> 缺镜像时从源码构建 -> 构建 void2md 并拉起全部服务
+# One-shot deploy: unpack dbx source -> build its image if missing -> build void2md and start all services
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -8,23 +8,23 @@ DBX_DIR="dbx"
 DBX_SRC="${DBX_DIR}/dbx-0.6.11"
 DBX_IMAGE="t8y2/dbx:latest"
 
-# 1. 解压 dbx 源码（已解压则跳过）
+# 1. Unpack dbx source (skip if already unpacked)
 if [ ! -d "${DBX_SRC}" ]; then
-    echo ">> 解压 ${DBX_ZIP} -> ${DBX_DIR}/"
+    echo ">> Unpacking ${DBX_ZIP} -> ${DBX_DIR}/"
     unzip -q "${DBX_ZIP}" -d "${DBX_DIR}"
 fi
 
-# 2. dbx 镜像不存在时，从源码构建（首次构建耗时较长，之后走缓存）
+# 2. Build the dbx image from source when missing (first build is slow; cached afterwards)
 if ! docker image inspect "${DBX_IMAGE}" >/dev/null 2>&1; then
-    echo ">> 本地无 ${DBX_IMAGE}，从源码构建..."
+    echo ">> ${DBX_IMAGE} not found locally, building from source..."
     docker build -f "${DBX_SRC}/deploy/Dockerfile" -t "${DBX_IMAGE}" "${DBX_SRC}"
 else
-    echo ">> ${DBX_IMAGE} 已存在，跳过构建"
+    echo ">> ${DBX_IMAGE} exists, skipping build"
 fi
 
-# 3. 构建 void2md 并拉起全部服务（BuildKit 增量缓存，快速构建）
+# 3. Build void2md and start all services (BuildKit incremental cache)
 export DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1
 docker compose up -d --build
 
 docker compose ps
-echo ">> 部署完成：void2md(:3457)  dbx(:4225)"
+echo ">> Deploy done: void2md(:3457)  dbx(:4225)"

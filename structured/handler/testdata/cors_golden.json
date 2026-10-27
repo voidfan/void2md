@@ -1,0 +1,178 @@
+[
+ {
+  "name": "ds_conn_test_get_405",
+  "status": 405,
+  "headers": {
+   "allow": "POST",
+   "content-length": "31",
+   "content-type": "application/json",
+   "access-control-allow-origin": "http://example.com",
+   "access-control-allow-credentials": "true",
+   "vary": "Origin"
+  },
+  "body": "{\"detail\":\"Method Not Allowed\"}"
+ },
+ {
+  "name": "ds_conn_test_put_405",
+  "status": 405,
+  "headers": {
+   "allow": "POST",
+   "content-length": "31",
+   "content-type": "application/json",
+   "access-control-allow-origin": "http://example.com",
+   "access-control-allow-credentials": "true",
+   "vary": "Origin"
+  },
+  "body": "{\"detail\":\"Method Not Allowed\"}"
+ },
+ {
+  "name": "ds_conn_test_options_405",
+  "status": 405,
+  "headers": {
+   "allow": "POST",
+   "content-length": "31",
+   "content-type": "application/json",
+   "access-control-allow-origin": "http://example.com",
+   "access-control-allow-credentials": "true",
+   "vary": "Origin"
+  },
+  "body": "{\"detail\":\"Method Not Allowed\"}"
+ },
+ {
+  "name": "ds_trailing_slash",
+  "status": 307,
+  "headers": {
+   "content-length": "0",
+   "location": "http://testserver/v1/data_source/conn_test",
+   "access-control-allow-origin": "http://example.com",
+   "access-control-allow-credentials": "true",
+   "vary": "Origin"
+  },
+  "body": ""
+ },
+ {
+  "name": "ds_trailing_slash_query",
+  "status": 307,
+  "headers": {
+   "content-length": "0",
+   "location": "http://testserver/v1/data_source/conn_test?a=1&b=%20x",
+   "access-control-allow-origin": "http://example.com",
+   "access-control-allow-credentials": "true",
+   "vary": "Origin"
+  },
+  "body": ""
+ },
+ {
+  "name": "ds_unknown_404",
+  "status": 404,
+  "headers": {
+   "content-length": "22",
+   "content-type": "application/json",
+   "access-control-allow-origin": "http://example.com",
+   "access-control-allow-credentials": "true",
+   "vary": "Origin"
+  },
+  "body": "{\"detail\":\"Not Found\"}"
+ },
+ {
+  "name": "ds_unknown_404_slash",
+  "status": 404,
+  "headers": {
+   "content-length": "22",
+   "content-type": "application/json",
+   "access-control-allow-origin": "http://example.com",
+   "access-control-allow-credentials": "true",
+   "vary": "Origin"
+  },
+  "body": "{\"detail\":\"Not Found\"}"
+ },
+ {
+  "name": "ds_get_404_no_origin",
+  "status": 404,
+  "headers": {
+   "content-length": "22",
+   "content-type": "application/json"
+  },
+  "body": "{\"detail\":\"Not Found\"}"
+ },
+ {
+  "name": "root_404",
+  "status": 404,
+  "headers": {
+   "content-length": "22",
+   "content-type": "application/json",
+   "access-control-allow-origin": "http://example.com",
+   "access-control-allow-credentials": "true",
+   "vary": "Origin"
+  },
+  "body": "{\"detail\":\"Not Found\"}"
+ },
+ {
+  "name": "double_slash_prefix_404",
+  "status": 404,
+  "headers": {
+   "content-length": "22",
+   "content-type": "application/json",
+   "access-control-allow-origin": "http://example.com",
+   "access-control-allow-credentials": "true",
+   "vary": "Origin"
+  },
+  "body": "{\"detail\":\"Not Found\"}"
+ },
+ {
+  "name": "preflight_ok",
+  "status": 200,
+  "headers": {
+   "vary": "Origin",
+   "access-control-allow-methods": "DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT",
+   "access-control-max-age": "600",
+   "access-control-allow-credentials": "true",
+   "access-control-allow-origin": "http://example.com",
+   "content-length": "2",
+   "content-type": "text/plain; charset=utf-8"
+  },
+  "body": "OK"
+ },
+ {
+  "name": "preflight_lowercase_method",
+  "status": 400,
+  "headers": {
+   "vary": "Origin",
+   "access-control-allow-methods": "DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT",
+   "access-control-max-age": "600",
+   "access-control-allow-credentials": "true",
+   "access-control-allow-origin": "http://example.com",
+   "content-length": "22",
+   "content-type": "text/plain; charset=utf-8"
+  },
+  "body": "Disallowed CORS method"
+ },
+ {
+  "name": "preflight_private_network",
+  "status": 400,
+  "headers": {
+   "vary": "Origin",
+   "access-control-allow-methods": "DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT",
+   "access-control-max-age": "600",
+   "access-control-allow-credentials": "true",
+   "access-control-allow-origin": "http://example.com",
+   "content-length": "31",
+   "content-type": "text/plain; charset=utf-8"
+  },
+  "body": "Disallowed CORS private-network"
+ },
+ {
+  "name": "preflight_404_path",
+  "status": 200,
+  "headers": {
+   "vary": "Origin",
+   "access-control-allow-methods": "DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT",
+   "access-control-max-age": "600",
+   "access-control-allow-credentials": "true",
+   "access-control-allow-origin": "http://example.com",
+   "content-length": "2",
+   "content-type": "text/plain; charset=utf-8"
+  },
+  "body": "OK"
+ }
+]

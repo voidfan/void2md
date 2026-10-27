@@ -9,14 +9,14 @@ import (
 	"void2md/common/diagnosis"
 )
 
-// SuccessResponse 标准成功响应
+// SuccessResponse is the standard success response.
 type SuccessResponse struct {
 	Code    string      `json:"code"`
 	Message string      `json:"msg"`
 	Data    interface{} `json:"data"`
 }
 
-// OK 返回成功响应
+// OK returns a success response.
 func OK(c *gin.Context, data interface{}) {
 	c.JSON(http.StatusOK, SuccessResponse{
 		Code:    "0",
@@ -25,7 +25,7 @@ func OK(c *gin.Context, data interface{}) {
 	})
 }
 
-// Created 返回创建成功响应
+// Created returns a 201 success response.
 func Created(c *gin.Context, data interface{}) {
 	c.JSON(http.StatusCreated, SuccessResponse{
 		Code:    "0",
@@ -34,15 +34,14 @@ func Created(c *gin.Context, data interface{}) {
 	})
 }
 
-// NoContent 返回空成功响应
+// NoContent returns an empty success response.
 func NoContent(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
-// JSONNoEscape 返回 JSON 响应，但关闭 HTML 转义（<、>、& 原样输出）。
-// 用于 markdown / HTML 表格等大体积、含大量 < 标签的响应：encoding/json 默认
-// HTML 转义会把每个 < 膨胀为 <（6 字节）、> 膨胀为 >，导致响应体数倍
-// 放大而 OOM（大 CSV 解析为 HTML 表格时尤其明显）。
+// JSONNoEscape writes JSON with HTML escaping disabled (<, >, & stay verbatim):
+// encoding/json escapes < and > to 6-byte \u sequences, bloating large
+// markdown/HTML-table responses several times (OOM risk on large CSV parses).
 func JSONNoEscape(c *gin.Context, code int, obj interface{}) {
 	c.Status(code)
 	c.Header("Content-Type", "application/json; charset=utf-8")
@@ -53,7 +52,7 @@ func JSONNoEscape(c *gin.Context, code int, obj interface{}) {
 	}
 }
 
-// GinRecovery Gin recovery 中间件：panic → 500 JSON（DiagnosisError 格式）
+// GinRecovery is a gin recovery middleware: panic -> 500 JSON (DiagnosisError shape).
 func GinRecovery() gin.HandlerFunc {
 	return gin.CustomRecovery(func(c *gin.Context, recovered interface{}) {
 		c.AbortWithStatusJSON(http.StatusInternalServerError, diagnosis.DiagnosisError{
@@ -64,7 +63,7 @@ func GinRecovery() gin.HandlerFunc {
 	})
 }
 
-// GinErrorHandler Gin 错误处理中间件：将 DiagnosisException 转换为标准 JSON 响应
+// GinErrorHandler converts DiagnosisException into the standard JSON response.
 func GinErrorHandler() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Next()
@@ -80,7 +79,7 @@ func GinErrorHandler() gin.HandlerFunc {
 			}
 		}
 
-		// 未识别的错误类型，返回 500
+		// Unknown error type: 500.
 		c.AbortWithStatusJSON(http.StatusInternalServerError, diagnosis.DiagnosisError{
 			Code:          "500",
 			DiagnosisCode: diagnosis.ErrorUnknownDiagnosisCode,

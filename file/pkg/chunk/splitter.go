@@ -5,13 +5,13 @@ import (
 	"strings"
 )
 
-// PackByBudget 贪心装箱：把 units 装入若干组，每组 Sum(TLen) + fixedOverhead <= budget。
+// PackByBudget greedily packs units into groups where Sum(TLen) + fixedOverhead <= budget.
 func PackByBudget(units []string, budget int, fixedOverhead int) [][]string {
 	if len(units) == 0 {
 		return nil
 	}
-	// 一次批量 token 计数：避免对每个单元单独跨 cgo（table 行数可达上万）。
-	// 返回的计数与 units 一一对应，装箱逻辑不变。
+	// Batch token count: avoids one cgo call per unit (tables can have tens of
+	// thousands of rows). Counts correspond 1:1 to units; packing logic unchanged.
 	toks := TLenBatch(units)
 	var groups [][]string
 	var cur []string
@@ -36,7 +36,7 @@ func PackByBudget(units []string, budget int, fixedOverhead int) [][]string {
 	return groups
 }
 
-// SplitText 按多级分隔符递归切分文本，每片 TLen <= budget。
+// SplitText recursively splits text by multi-level separators; each part has TLen <= budget.
 func SplitText(text string, budget int) []string {
 	return splitTextRecursive(text, budget, 0)
 }
@@ -102,7 +102,8 @@ func splitTextRecursive(text string, budget int, sepIdx int) []string {
 	return chunks
 }
 
-// SplitTable 统一表格切分入口：自动识别 HTML/Markdown，按预算切分并保持表格结构。
+// SplitTable is the table-splitting entry point: detects HTML/Markdown and splits
+// by budget while preserving table structure.
 func SplitTable(text string, budget int) []string {
 	if TLen(text) <= budget {
 		return []string{text}
@@ -215,12 +216,14 @@ func assembleChunk(isHTML bool, bodyText, openTag, header, closeTag, pre, post s
 	return strings.Join([]string{header, bodyText}, "\n")
 }
 
-// extractTopLevelTRs 提取最外层 <table> 的直接子 <tr>，跳过嵌套表格内的 <tr>。
+// extractTopLevelTRs extracts direct child <tr>s of the outermost <table>, skipping
+// rows of nested tables.
 //
-// 语义与 HTML_TABLE_TR_TAG.FindAllStringSubmatchIndex 逐字一致：识别
-// <(/)?(table|tr)\b[^>]*>（忽略大小写），左到右非重叠（每匹配到标签后从
-// 其末尾继续，跳过属性值内的 <table>/<tr>）。性能上改为单次手动字节扫描，
-// 消除 FindAll 每个匹配的 []int 分配与每标签的 strings.ToLower 分配。
+// Semantics are identical to HTML_TABLE_TR_TAG.FindAllStringSubmatchIndex: matches
+// <(/)?(table|tr)\b[^>]*> case-insensitively, left-to-right non-overlapping (resumes
+// after each tag, skipping <table>/<tr> inside attribute values). Implemented as a
+// single manual byte scan to avoid FindAll's per-match []int and per-tag ToLower
+// allocations.
 func extractTopLevelTRs(html string) []string {
 	var rows []string
 	td, trd := 0, 0
@@ -239,17 +242,17 @@ func extractTopLevelTRs(html string) []string {
 		if nameLen == 0 {
 			continue
 		}
-		// \b 边界：标签名后必须是单词字符之外（或串尾）
+		// \b boundary: tag name must be followed by a non-word byte (or end of string)
 		if j+nameLen < len(html) && isWordByte(html[j+nameLen]) {
 			continue
 		}
-		// [^>]*> 定位到首个 >（匹配末尾）
+		// [^>]*> advances to the first > (end of match)
 		k := j + nameLen
 		for k < len(html) && html[k] != '>' {
 			k++
 		}
 		if k == len(html) {
-			continue // 无 '>'，不构成标签
+			continue // no '>', not a tag
 		}
 		matchEnd := k + 1
 		if isTable {
@@ -274,13 +277,13 @@ func extractTopLevelTRs(html string) []string {
 				trd++
 			}
 		}
-		i = matchEnd - 1 // 从匹配末尾继续（非重叠）
+		i = matchEnd - 1 // resume at match end (non-overlapping)
 	}
 	return rows
 }
 
-// matchTableOrTr 匹配 html[j:] 处的 (table|tr)（忽略大小写）。
-// 返回标签名长度（5 或 2），以及是否为 table；不匹配返回 (0, false)。
+// matchTableOrTr matches (table|tr) at html[j:], case-insensitively.
+// Returns the tag name length (5 or 2) and whether it is table; (0, false) if no match.
 func matchTableOrTr(html string, j int) (nameLen int, isTable bool) {
 	if j+5 <= len(html) && asciiEqualFold(html[j:j+5], "table") {
 		return 5, true
@@ -291,8 +294,8 @@ func matchTableOrTr(html string, j int) (nameLen int, isTable bool) {
 	return 0, false
 }
 
-// asciiEqualFold 比较 s 与 ASCII 字面量 lit 是否忽略大小写相等（非 ASCII 字节
-// 参与原始比较，与 Go 正则 (?i) 对 ASCII 的行为一致）。
+// asciiEqualFold compares s with ASCII literal lit case-insensitively (non-ASCII bytes
+// compare raw, matching Go regexp (?i) behavior for ASCII).
 func asciiEqualFold(s, lit string) bool {
 	if len(s) != len(lit) {
 		return false
@@ -313,12 +316,12 @@ func asciiEqualFold(s, lit string) bool {
 	return true
 }
 
-// isWordByte 判断字节是否属于 Go 正则 \w 集合（[0-9A-Za-z_]）。
+// isWordByte reports whether the byte is in Go regexp's \w set ([0-9A-Za-z_]).
 func isWordByte(c byte) bool {
 	return '0' <= c && c <= '9' || 'A' <= c && c <= 'Z' || 'a' <= c && c <= 'z' || c == '_'
 }
 
-// ParseHTMLTable 解析 HTML 表格，返回 (openTag, header, bodyRows, pre, post)。
+// ParseHTMLTable parses an HTML table; returns (openTag, header, bodyRows, pre, post).
 func ParseHTMLTable(text string) (openTag, header string, bodyRows []string, pre, post string) {
 	openM := HTML_TABLE_OPEN.FindStringIndex(text)
 	if openM == nil {
@@ -327,7 +330,7 @@ func ParseHTMLTable(text string) (openTag, header string, bodyRows []string, pre
 	openTag = text[openM[0]:openM[1]]
 	pre = strings.TrimSpace(text[:openM[0]])
 
-	// 深度计数找到匹配的 </table>（避免嵌套表格时匹配到内层标签）
+	// depth-count to find the matching </table> (avoids matching an inner tag when nested)
 	depth := 1
 	pos := openM[1]
 	closeEnd := len(text)
@@ -361,7 +364,7 @@ func ParseHTMLTable(text string) (openTag, header string, bodyRows []string, pre
 		return tableHTML, "", nil, pre, post
 	}
 
-	// 连续仅含 <th>（无 <td>）的 <tr> 都视为表头
+	// leading consecutive <tr>s containing only <th> (no <td>) count as header
 	h := 0
 	for _, row := range rows {
 		if !HTML_TD_PRESENT.MatchString(row) {
@@ -374,7 +377,7 @@ func ParseHTMLTable(text string) (openTag, header string, bodyRows []string, pre
 		h = 1
 	}
 
-	// 多行表头：若最末表头行含 colspan，下一行可能是子列名
+	// multi-row header: if the last header row has colspan, the next row may hold sub-column names
 	hasColspan := regexp.MustCompile(`(?i)colspan\s*=\s*["']?\d`)
 	for h < len(rows) && hasColspan.MatchString(rows[h-1]) {
 		prevCells := len(regexp.MustCompile(`(?i)<(td|th)\b`).FindAllString(rows[h-1], -1))
@@ -390,7 +393,7 @@ func ParseHTMLTable(text string) (openTag, header string, bodyRows []string, pre
 	return openTag, header, rows[h:], pre, post
 }
 
-// ParseMDTable 从 Markdown 表格内容中提取 (header+divider, bodyRows)。
+// ParseMDTable extracts (header+divider, bodyRows) from Markdown table content.
 func ParseMDTable(text string) (header string, bodyRows []string) {
 	re := regexp.MustCompile(`(\|[^\n]*\|)\s*\n(\|(?:[\s\-:]*\|)+)\s*(?:\n|$)`)
 	m := re.FindStringSubmatch(text)

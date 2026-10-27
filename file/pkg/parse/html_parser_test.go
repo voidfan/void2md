@@ -251,8 +251,9 @@ func TestGetCharsetDecoder_Big5(t *testing.T) {
 }
 
 func TestGetCharsetDecoder_Unknown(t *testing.T) {
-	// 注意：范例用 koi8-r。iso-8859-1 自扩展后**可解**（按 WHATWG 标准走 windows-1252），
-	// 已不适合代表「不可解 charset」；koi8-r 刻意不在可解集合内。
+	// Note: the sample used koi8-r. iso-8859-1 became **decodable** after the
+	// extension (windows-1252 per WHATWG), so it no longer represents an
+	// "undecodable charset"; koi8-r is deliberately outside the decodable set.
 	dec := getCharsetDecoder("koi8-r")
 	if dec != nil {
 		t.Error("expected nil decoder for unsupported charset")

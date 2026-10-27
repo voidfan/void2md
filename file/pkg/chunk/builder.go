@@ -6,19 +6,19 @@ import (
 	"sync"
 )
 
-// bufferPool 用于重用 bytes.Buffer，减少内存分配
+// bufferPool reuses strings.Builders to reduce allocations.
 var bufferPool = sync.Pool{
 	New: func() interface{} {
 		return &strings.Builder{}
 	},
 }
 
-// getStringBuilder 获取一个重用的 strings.Builder
+// getStringBuilder returns a pooled strings.Builder.
 func getStringBuilder() *strings.Builder {
 	return bufferPool.Get().(*strings.Builder)
 }
 
-// putStringBuilder 归还 strings.Builder 到池中
+// putStringBuilder resets and returns a strings.Builder to the pool.
 func putStringBuilder(sb *strings.Builder) {
 	sb.Reset()
 	bufferPool.Put(sb)
@@ -26,12 +26,12 @@ func putStringBuilder(sb *strings.Builder) {
 
 // -- ChunkSink --
 
-// ChunkSink 收集所有 emit 出的 Chunk。
+// ChunkSink collects emitted chunks.
 type ChunkSink struct {
 	Docs []Chunk
 }
 
-// Push 添加一个 chunk 到收集器。
+// Push appends a chunk to the sink.
 func (s *ChunkSink) Push(chunk Chunk) {
 	if strings.TrimSpace(chunk.Text) == "" {
 		return
@@ -43,7 +43,7 @@ func (s *ChunkSink) Push(chunk Chunk) {
 
 // -- ChunkBuilder --
 
-// ChunkBuilder 构建中的 chunk 状态机。
+// ChunkBuilder is the in-progress chunk state.
 type ChunkBuilder struct {
 	Text              string
 	LineStart         int
@@ -51,15 +51,15 @@ type ChunkBuilder struct {
 	Types             []string
 	CurrentTitle      *Element
 	CurrentTitleLevel int
-	currentTokens     int // 跟踪当前token数，避免重复计算
+	currentTokens     int // cached token count, avoids recomputation
 }
 
-// IsEmpty 检查 builder 是否为空。
+// IsEmpty reports whether the builder has no content.
 func (b *ChunkBuilder) IsEmpty() bool {
 	return strings.TrimSpace(b.Text) == ""
 }
 
-// Tokens 返回当前文本的 token 数。
+// Tokens returns the token count of the current text.
 func (b *ChunkBuilder) Tokens() int {
 	if b.currentTokens == 0 && b.Text != "" {
 		b.currentTokens = TLen(b.Text)
@@ -67,7 +67,7 @@ func (b *ChunkBuilder) Tokens() int {
 	return b.currentTokens
 }
 
-// Track 合入元素时更新行号窗口和类型集合。
+// Track updates the line window and type set when merging an element.
 func (b *ChunkBuilder) Track(el *Element) {
 	if el == nil {
 		return
@@ -82,7 +82,7 @@ func (b *ChunkBuilder) Track(el *Element) {
 	}
 	ct, ok := ELEM_TO_CHUNK[el.Type]
 	if ok && el.Type != "title" {
-		// 去重添加
+		// append if not already present
 		found := false
 		for _, t := range b.Types {
 			if t == ct {
@@ -96,7 +96,7 @@ func (b *ChunkBuilder) Track(el *Element) {
 	}
 }
 
-// Append 无条件追加文本。
+// Append unconditionally appends text.
 func (b *ChunkBuilder) Append(text string, el *Element) {
 	if text == "" {
 		return
@@ -116,7 +116,7 @@ func (b *ChunkBuilder) Append(text string, el *Element) {
 	b.Track(el)
 }
 
-// Prepend 在文本前注入前缀。
+// Prepend injects a prefix before the text.
 func (b *ChunkBuilder) Prepend(prefix string) {
 	if prefix == "" {
 		return
@@ -135,7 +135,7 @@ func (b *ChunkBuilder) Prepend(prefix string) {
 	}
 }
 
-// Replace 覆盖式重置内容。
+// Replace resets the content.
 func (b *ChunkBuilder) Replace(text string, el *Element) {
 	b.Text = text
 	b.currentTokens = 0
@@ -144,7 +144,7 @@ func (b *ChunkBuilder) Replace(text string, el *Element) {
 	}
 }
 
-// Emit 将当前缓冲区作为 Chunk 推入 sink，然后 Reset。
+// Emit pushes the buffered content to the sink as a Chunk, then resets.
 func (b *ChunkBuilder) Emit(sink *ChunkSink, el *Element) {
 	if b.IsEmpty() {
 		b.Reset()
@@ -161,7 +161,7 @@ func (b *ChunkBuilder) Emit(sink *ChunkSink, el *Element) {
 	b.Reset()
 }
 
-// Reset 清空所有状态。
+// Reset clears all state.
 func (b *ChunkBuilder) Reset() {
 	b.Text = ""
 	b.currentTokens = 0
@@ -172,7 +172,7 @@ func (b *ChunkBuilder) Reset() {
 
 // -- ProcessContext --
 
-// ProcessContext 单次 Chunk() 调用的全部上下文。
+// ProcessContext holds all state for one Chunk() call.
 type ProcessContext struct {
 	Builder         *ChunkBuilder
 	Sink            *ChunkSink
@@ -185,7 +185,7 @@ type ProcessContext struct {
 	TokenizerInited bool
 }
 
-// MergeBudget 合并预算：maxChunkRatio * chunkSize。
+// MergeBudget returns maxChunkRatio * chunkSize for the content type.
 func (ctx *ProcessContext) MergeBudget(contentType string) int {
 	if ctx.MaxChunkRatio <= 0 {
 		return math.MaxInt32
@@ -197,9 +197,9 @@ func (ctx *ProcessContext) MergeBudget(contentType string) int {
 	return int(math.Round(ctx.MaxChunkRatio * float64(base)))
 }
 
-// -- 标题前缀工具 --
+// -- Heading prefix helpers --
 
-// ExtractHeadingPrefix 提取文本开头连续的 # 标题行。
+// ExtractHeadingPrefix extracts the leading consecutive # heading lines.
 func ExtractHeadingPrefix(text string) []string {
 	var out []string
 	for _, line := range strings.Split(text, "\n") {
@@ -219,7 +219,7 @@ func ExtractHeadingPrefix(text string) []string {
 	return out
 }
 
-// ParentsOf 沿 anchor 的 parent_id 链上溯，返回父级标题文本列表。
+// ParentsOf walks the anchor's parent_id chain and returns ancestor title elements.
 func ParentsOf(elements []Element, anchor *Element) []Element {
 	if anchor == nil {
 		return nil
@@ -233,7 +233,7 @@ func ParentsOf(elements []Element, anchor *Element) []Element {
 		if !ok || pid == 0 {
 			break
 		}
-		// 查找 parent element
+		// find parent element
 		found := false
 		for i := range elements {
 			if elements[i].ID == pid {
@@ -258,14 +258,14 @@ func ParentsOf(elements []Element, anchor *Element) []Element {
 	return parents
 }
 
-// BuildPrefix 构造标题前缀。
+// BuildPrefix builds the heading prefix.
 func BuildPrefix(ctx *ProcessContext, title *Element, parents []Element, contentType string) string {
 	budget := ctx.MergeBudget(contentType)
 	var parts []string
 	if title != nil && title.Text != "" {
 		parts = append(parts, title.Text)
 	}
-	// parents 已反转（从近到远），这里需要从远到近
+	// parents are near-to-far; prefix needs far-to-near
 	for i := len(parents) - 1; i >= 0; i-- {
 		t := parents[i].Text
 		if t == "" {
@@ -280,7 +280,7 @@ func BuildPrefix(ctx *ProcessContext, title *Element, parents []Element, content
 	return strings.TrimRight(strings.Join(parts, "\n"), "\n")
 }
 
-// DedupePrefixForBuilder 对照 builder.Text 删掉 prefix 中已存在的标题部分。
+// DedupePrefixForBuilder drops heading lines from prefix already present in builder.Text.
 func DedupePrefixForBuilder(prefix string, builder *ChunkBuilder) string {
 	if prefix == "" || builder.IsEmpty() {
 		return prefix
@@ -299,7 +299,7 @@ func DedupePrefixForBuilder(prefix string, builder *ChunkBuilder) string {
 	return strings.Join(pc[:len(pc)-n], "\n")
 }
 
-// HeadingsSubsequence 检查 prefix 中的所有 # 行是否按序出现在 body 中。
+// HeadingsSubsequence reports whether all # lines in prefix appear in body in order.
 func HeadingsSubsequence(prefix, body string) bool {
 	var pc []string
 	for _, line := range strings.Split(prefix, "\n") {
@@ -325,7 +325,7 @@ func HeadingsSubsequence(prefix, body string) bool {
 	return true
 }
 
-// TrailingHeadingMatch body 末尾连续标题行与 prefix 末尾标题行匹配的行数。
+// TrailingHeadingMatch returns how many trailing heading lines of body match prefix's.
 func TrailingHeadingMatch(body, prefix string) int {
 	var cc []string
 	for _, line := range strings.Split(body, "\n") {

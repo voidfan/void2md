@@ -9,11 +9,11 @@ func generatePageInfo(markdown string) []interface{} {
 	hasTable := strings.Contains(markdown, "<table") || strings.Contains(markdown, "|")
 
 	page := map[string]interface{}{
-		"content":    markdown,
-		"page_num":   1,
-		"has_image":  hasImage,
-		"has_table":  hasTable,
-		"has_chart":  false, // TODO: detect charts
+		"content":   markdown,
+		"page_num":  1,
+		"has_image": hasImage,
+		"has_table": hasTable,
+		"has_chart": false, // TODO: detect charts
 	}
 
 	return []interface{}{page}

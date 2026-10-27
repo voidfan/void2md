@@ -10,7 +10,7 @@ import (
 	"unicode/utf8"
 )
 
-// LRUCache 实现简单的LRU缓存
+// LRUCache is a simple LRU cache.
 type LRUCache struct {
 	capacity int
 	ttl      time.Duration
@@ -20,13 +20,13 @@ type LRUCache struct {
 }
 
 type cacheEntry struct {
-	key       uint64
-	count     int
-	ts        int64 // Unix nano
-	value     string
+	key   uint64
+	count int
+	ts    int64 // Unix nano
+	value string
 }
 
-// NewLRUCache 创建新的LRU缓存
+// NewLRUCache creates an LRU cache.
 func NewLRUCache(capacity int, ttl time.Duration) *LRUCache {
 	return &LRUCache{
 		capacity: capacity,
@@ -36,7 +36,7 @@ func NewLRUCache(capacity int, ttl time.Duration) *LRUCache {
 	}
 }
 
-// Get 从缓存获取值
+// Get returns a cached value.
 func (c *LRUCache) Get(key uint64) (int, bool) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
@@ -44,7 +44,7 @@ func (c *LRUCache) Get(key uint64) (int, bool) {
 	if element, ok := c.cache[key]; ok {
 		entry := element.Value.(*cacheEntry)
 		if time.Now().UnixNano()-entry.ts > c.ttl.Nanoseconds() {
-			// 缓存过期
+			// entry expired
 			c.list.Remove(element)
 			delete(c.cache, key)
 			return 0, false
@@ -55,7 +55,7 @@ func (c *LRUCache) Get(key uint64) (int, bool) {
 	return 0, false
 }
 
-// Put 向缓存添加值
+// Put adds a value to the cache.
 func (c *LRUCache) Put(key uint64, count int) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
@@ -68,7 +68,7 @@ func (c *LRUCache) Put(key uint64, count int) {
 	}
 
 	if c.list.Len() >= c.capacity {
-		// 移除最旧的元素
+		// evict oldest element
 		back := c.list.Back()
 		if back != nil {
 			oldEntry := back.Value.(*cacheEntry)
@@ -86,7 +86,7 @@ func (c *LRUCache) Put(key uint64, count int) {
 	c.cache[key] = element
 }
 
-// -- 全局 tokenizer 状态（sync.Once 保证单例初始化） --
+// -- global tokenizer state (sync.Once guarantees singleton init) --
 
 var (
 	tokenizerPath   string
@@ -94,11 +94,11 @@ var (
 	tokenizerOnce   sync.Once
 )
 
-// tlenCache 使用 LRU 缓存实现 token 计数缓存
+// tlenCache caches token counts via LRU.
 var tlenCache = NewLRUCache(5000, 5*time.Minute)
 
-// InitTokenizer 初始化 tokenizer（纯 Go fallback 版本仅记录路径，实际不做加载）。
-// 在 CGO 版本中此函数会加载 HuggingFace tokenizer。
+// InitTokenizer initializes the tokenizer. Pure-Go fallback only records the path;
+// the CGO version loads the HuggingFace tokenizer here.
 func InitTokenizer(path string) error {
 	tokenizerOnce.Do(func() {
 		tokenizerPath = path
@@ -107,20 +107,20 @@ func InitTokenizer(path string) error {
 	return nil
 }
 
-// CountTokens 估算文本的 token 数量。
-// 纯 Go fallback：中文字符 ~1 token/char，英文约 1.3 token/word。
+// CountTokens estimates the token count of text.
+// Pure-Go fallback heuristic: CJK ~1 token/char, English ~1.3 token/word.
 func CountTokens(text string) int {
 	if text == "" {
 		return 0
 	}
-	// 使用 strings.Fields 分割单词，比逐字符遍历更高效
+	// strings.Fields word split is faster than per-char iteration
 	words := len(strings.Fields(text))
 	runes := utf8.RuneCountInString(text)
 	nonASCII := runes - words
 	if nonASCII < 0 {
 		nonASCII = 0
 	}
-	// 中文 ~1 token/char，英文 ~1.3 token/word
+	// non-ASCII ~1 token/char, words ~1.3 tokens each
 	est := nonASCII + int(float64(words)*1.3)
 	if est < 1 {
 		est = 1
@@ -128,7 +128,7 @@ func CountTokens(text string) int {
 	return est
 }
 
-// AddTokens 增量计算token数，避免重复计算已知部分
+// AddTokens increments a token count, avoiding recounting the known part.
 func AddTokens(baseTokens int, newText string) int {
 	if newText == "" {
 		return baseTokens
@@ -136,7 +136,7 @@ func AddTokens(baseTokens int, newText string) int {
 	return baseTokens + CountTokens(newText)
 }
 
-// TLen 计算文本 token 数（带 LRU 缓存）。
+// TLen returns the token count of text (LRU-cached).
 func TLen(text string) int {
 	if text == "" {
 		return 0
@@ -156,8 +156,9 @@ func hashText(text string) uint64 {
 	return h.Sum64()
 }
 
-// CountTokensBatch 批量估算多个文本的 token 数。
-// 纯 Go fallback 版本与 CountTokens 逐条等价；cgo 版本合并为一次 FFI 调用。
+// CountTokensBatch estimates token counts for multiple texts.
+// Pure-Go fallback is equivalent to per-item CountTokens; the cgo version batches
+// into one FFI call.
 func CountTokensBatch(texts []string) []int {
 	n := len(texts)
 	if n == 0 {
@@ -170,7 +171,8 @@ func CountTokensBatch(texts []string) []int {
 	return out
 }
 
-// TLenBatch 批量计算多个文本的 token 数，语义与逐个 TLen 完全一致（带 LRU 缓存）。
+// TLenBatch computes token counts for multiple texts, semantically identical to
+// per-item TLen (LRU-cached).
 func TLenBatch(texts []string) []int {
 	n := len(texts)
 	if n == 0 {
@@ -204,8 +206,8 @@ func TLenBatch(texts []string) []int {
 	return out
 }
 
-// HardTokenSplit 当所有分隔符都失败时的最终兜底切分。
-// 按字符数（近似 token 边界）切分。
+// HardTokenSplit is the last-resort split when all separators fail:
+// splits by rune count (approximating token boundaries).
 func HardTokenSplit(text string, budget int) []string {
 	if budget <= 0 {
 		return nil

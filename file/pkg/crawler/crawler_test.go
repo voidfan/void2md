@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// site 用 httptest 起一个假站点：/pageN 互链成一条链，另加若干特殊页。
+// site stands up a fake site with httptest: /pageN interlinked as a chain, plus special pages.
 func site(t *testing.T, pages map[string]string) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -53,8 +53,8 @@ func defaultOpts(entry string) Options {
 
 func TestCrawl_ThreePagesDedup(t *testing.T) {
 	srv := site(t, map[string]string{
-		"/":  page("/a", "/b", "/a"), // /a 重复出现
-		"/a": page("/", "/b"),        // 回指入口
+		"/":  page("/a", "/b", "/a"), // /a appears twice
+		"/a": page("/", "/b"),        // links back to entry
 		"/b": page("/"),
 	})
 	res, err := Crawl(context.Background(), defaultOpts(srv.URL+"/"), nil)
@@ -76,26 +76,29 @@ func TestCrawl_ThreePagesDedup(t *testing.T) {
 	}
 }
 
-// TestCrawl_CrossDomainNotFollowed 覆盖设计 §3.3 同域判定：跨站链接必须不入队。
+// TestCrawl_CrossDomainNotFollowed covers design §3.3 same-site rule: cross-site links must not be enqueued.
 //
-// **构造难点（不要退回成两个 httptest server）：** httptest 起的 server 都在
-// 127.0.0.1，仅端口不同；而本实现的 SameHost 忽略端口、且 IP 字面量退化为
-// host 全等 —— 所以「两个 httptest server」按规则是**同域**，那样构造的用例
-// 无论加不加过滤都过不了（加了 → 仍被跟随 → 2 页；不加 → 也是 2 页）。
+// **Construction pitfall (do not fall back to two httptest servers):** httptest
+// servers all live on 127.0.0.1 with different ports, while SameHost ignores
+// ports and IP literals degrade to host equality — so "two httptest servers"
+// are **same-domain** by the rules, and such a test fails with or without the
+// filter (with → still followed → 2 pages; without → also 2 pages).
 //
-// 正确构造：利用 localhost 与 127.0.0.1 的注册域不同（publicsuffix 对
-// "localhost" 解析失败，退化为 host 全等比较），但两者指向同一个 server：
-//   - 入口用 http://localhost:PORT/
-//   - 页面链接指向 http://127.0.0.1:PORT/other（同一 server，但判为跨站）
+// Correct construction: exploit that localhost and 127.0.0.1 have different
+// registrable domains (publicsuffix fails to parse "localhost", degrading to
+// host equality), while both point at the same server:
+//   - entry: http://localhost:PORT/
+//   - page links to http://127.0.0.1:PORT/other (same server, but cross-site)
 //
-// 鉴别力：加了过滤 → 链接被拒 → 1 页；漏了过滤 → 真能抓到 → 2 页。
+// Discriminating power: filter present → link rejected → 1 page; filter missing → actually fetched → 2 pages.
 func TestCrawl_CrossDomainNotFollowed(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		if r.URL.Path == "/" {
-			// 用请求自身的 Host 端口拼出对端地址。**不要**改成在测试 goroutine 里
-			// 事后写一个 port 变量、再由 handler 读它：那是无同步边的数据竞争，
-			// `go test -race` 会报。r.Host 里天然带着端口。
+			// Build the peer address from the request's own Host port. **Do not**
+			// switch to a port variable written by the test goroutine and read by
+			// the handler: that is a data race with no synchronization edge and
+			// `go test -race` will flag it. r.Host naturally carries the port.
 			_, port, err := net.SplitHostPort(r.Host)
 			if err != nil {
 				http.Error(w, "bad host", http.StatusBadRequest)
@@ -114,13 +117,14 @@ func TestCrawl_CrossDomainNotFollowed(t *testing.T) {
 	}
 	port := u.Port()
 
-	// 可达性探测：localhost 必须能回连同一 server，否则本用例无鉴别力。
-	// 探测失败时 Skip 而非放行，避免「静默空过」的假绿。带超时，
-	// 否则 localhost 不通时探测会挂住整个测试。
+	// Reachability probe: localhost must connect back to the same server, else
+	// this case has no discriminating power. Skip (not pass) on probe failure to
+	// avoid a silent false green. With timeout, else an unreachable localhost
+	// hangs the whole test.
 	probeClient := &http.Client{Timeout: 3 * time.Second}
 	probe, err := probeClient.Get("http://localhost:" + port + "/other")
 	if err != nil {
-		t.Skipf("localhost 无法回连测试服务器（%v），本用例在此环境无鉴别力", err)
+		t.Skipf("localhost cannot reach the test server (%v); this case has no discriminating power here", err)
 	}
 	probe.Body.Close()
 
@@ -129,12 +133,12 @@ func TestCrawl_CrossDomainNotFollowed(t *testing.T) {
 		t.Fatalf("Crawl error: %v", err)
 	}
 	if len(res.Pages) != 1 {
-		t.Fatalf("pages = %d, want 1（跨站链接不得入队）; urls=%v",
+		t.Fatalf("pages = %d, want 1 (cross-site links must not be enqueued); urls=%v",
 			len(res.Pages), pageURLs(res))
 	}
 }
 
-// pageURLs 便于失败时打印实际抓到的 URL。
+// pageURLs makes failure output show the actually fetched URLs.
 func pageURLs(res *Result) []string {
 	out := make([]string, 0, len(res.Pages))
 	for _, p := range res.Pages {
@@ -143,8 +147,8 @@ func pageURLs(res *Result) []string {
 	return out
 }
 
-// TestCrawl_SubPageFailuresDoNotAbort 子页 404 / 非 HTML / 空内容都只跳过，
-// 不影响入口页成功，也不影响任务终态。
+// TestCrawl_SubPageFailuresDoNotAbort: child-page 404 / non-HTML / empty content are
+// skipped only; the entry page success and task terminal state are unaffected.
 func TestCrawl_SubPageFailuresDoNotAbort(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -170,7 +174,7 @@ func TestCrawl_SubPageFailuresDoNotAbort(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Crawl error: %v", err)
 	}
-	if len(res.Pages) != 2 { // "/" 与 "/ok"
+	if len(res.Pages) != 2 { // "/" and "/ok"
 		t.Fatalf("pages = %d, want 2", len(res.Pages))
 	}
 	if res.Truncated {
@@ -178,7 +182,7 @@ func TestCrawl_SubPageFailuresDoNotAbort(t *testing.T) {
 	}
 }
 
-// TestCrawl_MaxPageTruncates 覆盖设计 §2.2 提前停止成因 1。
+// TestCrawl_MaxPageTruncates covers design §2.2 early-stop cause 1.
 func TestCrawl_MaxPageTruncates(t *testing.T) {
 	srv := site(t, map[string]string{
 		"/":  page("/a", "/b", "/c"),
@@ -201,7 +205,7 @@ func TestCrawl_MaxPageTruncates(t *testing.T) {
 	}
 }
 
-// TestCrawl_TaskTimeoutKeepsPages 覆盖设计 §4.3：超时保留已抓页面并置 truncated。
+// TestCrawl_TaskTimeoutKeepsPages covers design §4.3: timeout keeps fetched pages and sets truncated.
 func TestCrawl_TaskTimeoutKeepsPages(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -209,7 +213,7 @@ func TestCrawl_TaskTimeoutKeepsPages(t *testing.T) {
 			w.Header().Set("Content-Type", "text/html")
 			_, _ = w.Write([]byte(page("/slow")))
 		case "/slow":
-			time.Sleep(2 * time.Second) // 超过任务预算
+			time.Sleep(2 * time.Second) // exceeds the task budget
 			w.Header().Set("Content-Type", "text/html")
 			_, _ = w.Write([]byte(page()))
 		default:
@@ -219,10 +223,10 @@ func TestCrawl_TaskTimeoutKeepsPages(t *testing.T) {
 	defer srv.Close()
 
 	opts := defaultOpts(srv.URL + "/")
-	// 1s 而非 300ms：这 1s 必须容得下入口页的一次 localhost 往返。
-	// 若卡得太紧，CI 负载高时入口页就会因超时被判失败、pages=0，
-	// 测试报出误导性的 "entry page failed"，鉴别力却没有提升。
-	// /slow 睡 2s，仍远大于预算，鉴别力不变。
+	// 1s rather than 300ms: the 1s must fit one localhost round-trip for the
+	// entry page. Too tight, and under heavy CI load the entry page fails by
+	// timeout with pages=0, producing a misleading "entry page failed" with no
+	// gain in discriminating power. /slow sleeps 2s, still far over budget.
 	opts.TaskTimeout = 1 * time.Second
 
 	res, err := Crawl(context.Background(), opts, nil)
@@ -230,14 +234,14 @@ func TestCrawl_TaskTimeoutKeepsPages(t *testing.T) {
 		t.Fatalf("Crawl error: %v", err)
 	}
 	if len(res.Pages) != 1 {
-		t.Fatalf("pages = %d, want 1 (已抓页面必须保留)", len(res.Pages))
+		t.Fatalf("pages = %d, want 1 (already-fetched pages must be kept)", len(res.Pages))
 	}
 	if !res.Truncated {
 		t.Errorf("Truncated = false, want true")
 	}
 }
 
-// TestCrawl_MaxTaskBytesTruncates 内存保护上限。
+// TestCrawl_MaxTaskBytesTruncates: memory-protection byte limit.
 func TestCrawl_MaxTaskBytesTruncates(t *testing.T) {
 	big := "<html><body><p>" + strings.Repeat("字", 5000) + "</p></body></html>"
 	srv := site(t, map[string]string{
@@ -246,7 +250,7 @@ func TestCrawl_MaxTaskBytesTruncates(t *testing.T) {
 		"/b": big,
 	})
 	opts := defaultOpts(srv.URL + "/")
-	opts.MaxTaskBytes = 100 // 远小于单页 markdown
+	opts.MaxTaskBytes = 100 // far below one page's markdown
 
 	res, err := Crawl(context.Background(), opts, nil)
 	if err != nil {
@@ -257,7 +261,7 @@ func TestCrawl_MaxTaskBytesTruncates(t *testing.T) {
 	}
 }
 
-// TestCrawl_EntryFailures 覆盖设计 §2.2 终态判定：抓到 0 页 → error，原因具体。
+// TestCrawl_EntryFailures covers design §2.2 terminal state: 0 pages → error with a specific reason.
 func TestCrawl_EntryFailures(t *testing.T) {
 	t.Run("entry 404", func(t *testing.T) {
 		srv := site(t, map[string]string{})
@@ -301,8 +305,8 @@ func TestCrawl_EntryFailures(t *testing.T) {
 		}
 	})
 
-	// 超时且一页都没抓到 → failed，且 error 必须说明是超时（设计 §2.2）。
-	// 这是「超时本身不直接导致 failed，但 0 页时因规则 2 落 failed」的唯一路径。
+	// Timeout with zero pages → failed, and the error must say it was a timeout (design §2.2).
+	// This is the only path where "timeout alone doesn't cause failed, but 0 pages makes it failed via rule 2".
 	t.Run("timeout with zero pages reports timeout", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			time.Sleep(2 * time.Second)
@@ -330,11 +334,13 @@ func TestCrawl_InvalidEntryURL(t *testing.T) {
 	}
 }
 
-// TestCrawl_ProgressCallback 运行中 pages 计数（设计 §2.2 的进度信号）。
+// TestCrawl_ProgressCallback: running pages count (the design §2.2 progress signal).
 //
-// 断言的是**序列**而不只是终值。只校验终值的话，「把回调从 emit 里挪到 Crawl
-// 返回前调用一次」这个变异会存活——而设计 §2.2 承诺非终态时 pages 是**唯一**
-// 的进度信号：那样一个跑 5 分钟的任务会让调用方始终看到 pages=0，误判为卡死。
+// Asserts the **sequence**, not just the final value. Checking only the final
+// value lets the mutation "move the callback out of emit into one call before
+// Crawl returns" survive — and design §2.2 promises pages is the **only**
+// progress signal for non-terminal states: a 5-minute task would keep showing
+// pages=0 and be mistaken for hung.
 func TestCrawl_ProgressCallback(t *testing.T) {
 	srv := site(t, map[string]string{
 		"/":  page("/a", "/b"),
@@ -362,7 +368,7 @@ func TestCrawl_ProgressCallback(t *testing.T) {
 	}
 }
 
-// TestCrawl_TitleFallback title 三级回退：<title> → 首个 <h1> → URL。
+// TestCrawl_TitleFallback: three-level title fallback: <title> → first <h1> → URL.
 func TestCrawl_TitleFallback(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
@@ -398,23 +404,26 @@ func TestCrawl_TitleFallback(t *testing.T) {
 	}
 }
 
-// TestCrawl_LinksComeFromWholeDocument 钉死设计 §4.2 第 10 步「链接必须从**整个文档**
-// 提取」：导航栏里的分页链接往往在被选中的正文子树**之外**，只从裁剪后的子树取链接
-// 就永远发现不了它们。
+// TestCrawl_LinksComeFromWholeDocument pins design §4.2 step 10 "links must be
+// extracted from the **whole document**": nav-bar pagination links often live
+// **outside** the selected content subtree, so extracting only from the scoped
+// subtree never discovers them.
 //
-// **为什么必须单独补这一条（计划里的用例对它零鉴别力）**：计划中所有 fixture 都是
-// `Selector="body"`，且链接全写在 `<body>` 里 —— 「从 doc 取」与「从重新解析的
-// scoped 子树取」产出的链接集合完全相同。实测：把 ExtractLinks 的输入从 doc 换成
-// 重新解析的 scoped（变异体 m_links_from_subtree），计划里的全部用例仍全绿。
+// **Why this case had to be added (planned cases have zero discriminating
+// power for it)**: every planned fixture uses `Selector="body"` with links
+// inside `<body>` — "from doc" and "from the re-parsed scoped subtree" yield
+// identical link sets. Verified: switching ExtractLinks's input from doc to a
+// re-parsed scoped (mutation m_links_from_subtree) keeps all planned cases green.
 //
-// 本用例把导航链接放在 `main` 之外（真实分页导航的形态），并**正向**断言两侧的
-// 链接都被发现，这样「不取链接」与「只取子树链接」都过不去。
+// This case puts a nav link outside `main` (the shape of real pagination navs)
+// and **positively** asserts both sides' links are found, so both "no links"
+// and "subtree-only links" fail.
 func TestCrawl_LinksComeFromWholeDocument(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		switch r.URL.Path {
 		case "/":
-			// <nav> 在正文子树 <main> 之外；<main> 内另有一条链接。
+			// <nav> is outside the content subtree <main>; <main> has its own link.
 			_, _ = w.Write([]byte(`<html><body><nav><a href="/nav-next">下一页</a></nav>` +
 				`<main><p>正文</p><a href="/in-main">正文内链接</a></main></body></html>`))
 		default:
@@ -424,7 +433,7 @@ func TestCrawl_LinksComeFromWholeDocument(t *testing.T) {
 	defer srv.Close()
 
 	opts := defaultOpts(srv.URL + "/")
-	opts.Selector = "main" // 正文子树：<nav> 不在其中
+	opts.Selector = "main" // content subtree: <nav> is not in it
 
 	res, err := Crawl(context.Background(), opts, nil)
 	if err != nil {
@@ -437,7 +446,7 @@ func TestCrawl_LinksComeFromWholeDocument(t *testing.T) {
 	want := []string{srv.URL + "/", srv.URL + "/nav-next", srv.URL + "/in-main"}
 	for _, u := range want {
 		if !got[u] {
-			t.Errorf("page %s missing; 链接必须从整个文档提取（含 selector 之外的导航），子树内的链接同样不能漏; urls=%v",
+			t.Errorf("page %s missing; links must come from the whole document (incl. navs outside the selector), and subtree links must not be missed either; urls=%v",
 				u, pageURLs(res))
 		}
 	}
@@ -446,13 +455,15 @@ func TestCrawl_LinksComeFromWholeDocument(t *testing.T) {
 	}
 }
 
-// TestCrawl_EmptyContentMessages 钉死空页规则（设计 §4.2 第 7 步）的**两条不同**错误文本：
-// "matched nothing"（selector 未命中任何元素）与 "produced no text"（命中但正文为空）。
+// TestCrawl_EmptyContentMessages pins the **two distinct** error texts of the
+// empty-page rule (design §4.2 step 7): "matched nothing" (selector hit no
+// element) vs "produced no text" (matched but content empty).
 //
-// 为什么需要：`len(scoped) == 0` 那一支整个删掉（变异体 m_empty_scoped_nocheck）后，
-// 未命中的页面会落进后面的 TrimSpace 分支、报出另一条文本；而计划里的用例只断言两条
-// 文本共有的 "empty content" 前缀与 selector 回显，于是「选择器写错」与「页面正文为空」
-// 在错误文本上被抹平，排查时无法区分。这里对两条文本各做一次正向断言。
+// Why needed: deleting the whole `len(scoped) == 0` branch (mutation
+// m_empty_scoped_nocheck) makes no-match pages fall into the later TrimSpace
+// branch and report the other text; planned cases only assert the shared
+// "empty content" prefix and the echoed selector, so "wrong selector" and
+// "empty page body" become indistinguishable when debugging. This asserts each text positively.
 func TestCrawl_EmptyContentMessages(t *testing.T) {
 	t.Run("selector matches nothing", func(t *testing.T) {
 		srv := site(t, map[string]string{"/": page()})
@@ -463,7 +474,7 @@ func TestCrawl_EmptyContentMessages(t *testing.T) {
 			t.Fatal("expected error")
 		}
 		if !strings.Contains(err.Error(), "matched nothing") {
-			t.Errorf("error = %q, want the %q wording (selector 未命中任何元素)", err, "matched nothing")
+			t.Errorf("error = %q, want the %q wording (selector matched no element)", err, "matched nothing")
 		}
 	})
 
@@ -474,22 +485,25 @@ func TestCrawl_EmptyContentMessages(t *testing.T) {
 			t.Fatal("expected error")
 		}
 		if !strings.Contains(err.Error(), "produced no text") {
-			t.Errorf("error = %q, want the %q wording (命中但正文为空)", err, "produced no text")
+			t.Errorf("error = %q, want the %q wording (matched but content empty)", err, "produced no text")
 		}
 		if strings.Contains(err.Error(), "matched nothing") {
-			t.Errorf("error = %q: 命中了 body 却报 matched nothing，两条成因被混为一谈", err)
+			t.Errorf("error = %q: body was matched yet reports matched nothing; the two causes are conflated", err)
 		}
 	})
 }
 
-// TestCrawl_MarkdownNotDoubleDecoded 钉死「字节已在 Fetch 阶段解码为 UTF-8，因此必须以
-// "utf-8" 调用解析器」这条约定（crawler.go 里唯一的编码相关约束）。
+// TestCrawl_MarkdownNotDoubleDecoded pins the convention "bytes are already
+// decoded to UTF-8 in Fetch, so the parser must be called with \"utf-8\""
+// (the only encoding-related constraint in crawler.go).
 //
-// 构造：页面自带一个**撒谎的** <meta charset="gbk">（HTTP 头声明 utf-8，字节其实是
-// UTF-8）。selector 取 "html" 让 <head> 里的 meta 进入被解析的子树 —— 若把 charset
-// hint 传成 ""，解析器会按 <meta> 把已解码的 UTF-8 字节再按 GBK 解一遍，中文变成乱码
-// （「中文正文内容」→「涓枃姝ｆ枃鍐呭」），故此处必须**正向**断言原文出现：
-// 负向断言（不含乱码）在此没有意义，用错的解码器本来也解不出「中文正文内容」。
+// Construction: the page carries a **lying** <meta charset="gbk"> (HTTP header
+// says utf-8 and the bytes really are UTF-8). Selector "html" keeps the <head>
+// meta inside the parsed subtree — if the charset hint were passed as "", the
+// parser would re-decode the already-UTF-8 bytes as GBK per <meta>, garbling
+// the Chinese ("中文正文内容" → "涓枃姝ｆ枃鍐呭"). Hence the **positive**
+// assertion that the original text appears: a negative assertion (no mojibake)
+// is meaningless here since a wrong decoder also wouldn't produce the original.
 func TestCrawl_MarkdownNotDoubleDecoded(t *testing.T) {
 	const body = `<html><head><meta charset="gbk"><title>T</title></head>` +
 		`<body><p>中文正文内容</p></body></html>`
@@ -500,7 +514,7 @@ func TestCrawl_MarkdownNotDoubleDecoded(t *testing.T) {
 	defer srv.Close()
 
 	opts := defaultOpts(srv.URL + "/")
-	opts.Selector = "html" // 让 <head> 里的 meta 留在被解析的子树内
+	opts.Selector = "html" // keep the <head> meta inside the parsed subtree
 
 	res, err := Crawl(context.Background(), opts, nil)
 	if err != nil {
@@ -510,20 +524,22 @@ func TestCrawl_MarkdownNotDoubleDecoded(t *testing.T) {
 		t.Fatalf("pages = %d, want 1; urls=%v", len(res.Pages), pageURLs(res))
 	}
 	if md := res.Pages[0].Markdown; !strings.Contains(md, "中文正文内容") {
-		t.Errorf("markdown = %q, want it to contain 中文正文内容 (未被 <meta charset=gbk> 二次解码)", md)
+		t.Errorf("markdown = %q, want it to contain 中文正文内容 (not double-decoded per <meta charset=gbk>)", md)
 	}
 }
 
-// TestCrawl_OptionFallbacks 钉死 Crawl 内部的三条参数兜底（Options 自身不做校验，
-// 见 types.go：MaxPage <=0 视为 1、Concurrency <=0 视为 4、TaskTimeout <=0 视为 5 分钟）。
+// TestCrawl_OptionFallbacks pins Crawl's three internal parameter fallbacks
+// (Options itself does no validation, see types.go: MaxPage <=0 → 1,
+// Concurrency <=0 → 4, TaskTimeout <=0 → 5 minutes).
 //
-// **为什么必须补**：这三条分支此前没有任何用例，把任一条整个删掉（变异体
-// m_maxpage_nofallback / m_concurrency_serial / m_tasktimeout_nofallback）全绿。
-// 而调用方（service 层）完全可以把 0 当「没配」传下来：
-//   - MaxPage 兜底被删 → 0 直接命中「页数已达上限」，调用方拿到 0 页的失败结果；
-//   - TaskTimeout 兜底被删 → context.WithTimeout(ctx, 0) 立刻到期，同样 0 页失败；
-//   - Concurrency 兜底被删 → 容量 0 的 channel 上谁都拿不到令牌，整批页面全部
-//     挂到任务预算耗尽（这条用例把预算压到 3s，失败时 3s 内收敛，不会挂住）。
+// **Why needed**: these three branches had no cases; deleting any of them
+// (mutations m_maxpage_nofallback / m_concurrency_serial /
+// m_tasktimeout_nofallback) stayed green. Callers (the service layer) may well
+// pass 0 meaning "not configured":
+//   - MaxPage fallback removed → 0 immediately hits "page limit reached", caller gets a 0-page failure;
+//   - TaskTimeout fallback removed → context.WithTimeout(ctx, 0) expires instantly, same 0-page failure;
+//   - Concurrency fallback removed → nobody gets a token on a capacity-0 channel; the whole batch
+//     hangs until the task budget is exhausted (this case sets the budget to 3s, so it converges within 3s).
 func TestCrawl_OptionFallbacks(t *testing.T) {
 	srv := site(t, map[string]string{
 		"/":  page("/a"),
@@ -538,17 +554,17 @@ func TestCrawl_OptionFallbacks(t *testing.T) {
 			t.Fatalf("Crawl error: %v", err)
 		}
 		if len(res.Pages) != 1 {
-			t.Errorf("pages = %d, want 1 (MaxPage<=0 兜底为 1)", len(res.Pages))
+			t.Errorf("pages = %d, want 1 (MaxPage<=0 falls back to 1)", len(res.Pages))
 		}
 	})
 
 	t.Run("Concurrency 0 falls back to 4", func(t *testing.T) {
 		opts := defaultOpts(srv.URL + "/")
 		opts.Concurrency = 0
-		opts.TaskTimeout = 3 * time.Second // 兜底生效时远用不到，失效时在此收敛
+		opts.TaskTimeout = 3 * time.Second // far from needed when the fallback works; bounds failure otherwise
 		res, err := Crawl(context.Background(), opts, nil)
 		if err != nil {
-			t.Fatalf("Crawl error: %v (Concurrency<=0 必须兜底，否则无人能拿到令牌)", err)
+			t.Fatalf("Crawl error: %v (Concurrency<=0 must fall back, else nobody gets a token)", err)
 		}
 		if len(res.Pages) != 2 {
 			t.Errorf("pages = %d, want 2", len(res.Pages))
@@ -560,28 +576,31 @@ func TestCrawl_OptionFallbacks(t *testing.T) {
 		opts.TaskTimeout = 0
 		res, err := Crawl(context.Background(), opts, nil)
 		if err != nil {
-			t.Fatalf("Crawl error: %v (TaskTimeout<=0 必须兜底，而不是立刻到期)", err)
+			t.Fatalf("Crawl error: %v (TaskTimeout<=0 must fall back, not expire instantly)", err)
 		}
 		if len(res.Pages) != 2 {
 			t.Errorf("pages = %d, want 2", len(res.Pages))
 		}
 		if res.Truncated {
-			t.Errorf("Truncated = true, want false (兜底后的预算不该被判定为提前停止)")
+			t.Errorf("Truncated = true, want false (the fallback budget should not count as early stop)")
 		}
 	})
 }
 
-// TestCrawl_LinksFromDiscardedPagesStillEnqueued 钉住「链接入队与页面是否有效**无关**」。
+// TestCrawl_LinksFromDiscardedPagesStillEnqueued pins "link enqueueing is
+// **independent of page validity**".
 //
-// 为什么需要：`process()` 在「selector 未命中」「正文为空」这些**页面被判空丢弃**的
-// 路径上照样返回它已抽出的链接（crawler.go 里那几处 `return Page{}, links, err`），
-// 而调用方在 `if r.err != nil { ...; continue }` 里把这些链接一起丢掉了——那个
-// `links` 返回值因此是死的。受害场景恰是设计 §4.2 第 10 步存在的理由：**导航页 /
-// 聚合页**常常自己渲染不出正文，却链接着整棵子树。判空即止会让整棵子树抓不到，
-// 任务还报 success。
+// Why needed: on the "selector missed" / "empty content" paths where the page
+// is discarded as empty, `process()` still returns the links it extracted
+// (the `return Page{}, links, err` sites in crawler.go), but the caller used
+// to drop them in `if r.err != nil { ...; continue }` — making that `links`
+// return dead. The victim scenario is exactly why design §4.2 step 10 exists:
+// **nav/aggregator pages** often render no content themselves yet link a whole
+// subtree. Discarding on empty loses the entire subtree while the task still
+// reports success.
 func TestCrawl_LinksFromDiscardedPagesStillEnqueued(t *testing.T) {
-	// /hub 没有任何 <main>（selector 未命中 → 被丢弃），但它链到 /leaf；
-	// /leaf 有 <main>，能渲染出正文。
+	// /hub has no <main> (selector misses → discarded) but links to /leaf;
+	// /leaf has <main> and renders content.
 	srv := site(t, map[string]string{
 		"/hub":  `<html><body><nav><a href="/leaf">leaf</a></nav><p>hub</p></body></html>`,
 		"/leaf": `<html><body><main><p>leaf 正文</p></main></body></html>`,
@@ -591,37 +610,40 @@ func TestCrawl_LinksFromDiscardedPagesStillEnqueued(t *testing.T) {
 
 	res, err := Crawl(context.Background(), opts, nil)
 	if err != nil {
-		t.Fatalf("Crawl error = %v；/hub 被丢弃但链到了 /leaf，/leaf 必须仍被抓到", err)
+		t.Fatalf("Crawl error = %v; /hub is discarded but links to /leaf, so /leaf must still be fetched", err)
 	}
 	got := map[string]bool{}
 	for _, u := range pageURLs(res) {
 		got[u] = true
 	}
 	if !got[srv.URL+"/leaf"] {
-		t.Errorf("/leaf 缺失：被丢弃页面上的链接也必须入队（设计 §4.2 第 10 步）；urls=%v", pageURLs(res))
+		t.Errorf("/leaf missing: links on discarded pages must still be enqueued (design §4.2 step 10); urls=%v", pageURLs(res))
 	}
 	if len(res.Pages) != 1 {
-		t.Errorf("pages = %d, want 1（只有 /leaf 有效）；urls=%v", len(res.Pages), pageURLs(res))
+		t.Errorf("pages = %d, want 1 (only /leaf is valid); urls=%v", len(res.Pages), pageURLs(res))
 	}
 }
 
-// TestCrawl_MaxTaskBytesBeforeAnyPageMessage 钉住「字节预算在第一页就挡下」时的错误成因。
+// TestCrawl_MaxTaskBytesBeforeAnyPageMessage pins the error cause when "the byte
+// budget blocks at the very first page".
 //
-// 为什么需要：命中预算时 `stop = StopMaxBytes` 在 `pages = append(...)` **之前** break，
-// 于是 pages 保持 0，落进 0 页终态分支；而该分支只特判 `StopTimeout`，其余一律报
-// `entry page ... produced no content`。运维看到这句话会去查站点，而真正的原因是
-// `PDF2TEXT_HTML_MAX_TASK_BYTES_MB` 配小了——成因词从未出现在 error 或日志里，
-// 与设计 §2.2「error 携带具体底层原因」不符。
+// Why needed: when the budget is hit, `stop = StopMaxBytes` breaks **before**
+// `pages = append(...)`, so pages stays 0 and falls into the 0-page terminal
+// branch; that branch only special-cases `StopTimeout` and otherwise reports
+// `entry page ... produced no content`. Ops seeing that would go check the
+// site, while the real cause is `PDF2TEXT_HTML_MAX_TASK_BYTES_MB` set too low —
+// the cause word never appeared in the error or logs, contradicting design
+// §2.2's "error carries the specific underlying cause".
 func TestCrawl_MaxTaskBytesBeforeAnyPageMessage(t *testing.T) {
 	srv := site(t, map[string]string{"/": page()})
 	opts := defaultOpts(srv.URL + "/")
-	opts.MaxTaskBytes = 1 // 比任何一页的 markdown 都小：第一页就被挡下，pages 保持 0
+	opts.MaxTaskBytes = 1 // smaller than any page's markdown: blocked at page 1, pages stays 0
 
 	_, err := Crawl(context.Background(), opts, nil)
 	if err == nil {
 		t.Fatal("expected error")
 	}
 	if !strings.Contains(err.Error(), "PDF2TEXT_HTML_MAX_TASK_BYTES_MB") {
-		t.Errorf("error = %q，必须点名字节预算这条成因（含 PDF2TEXT_HTML_MAX_TASK_BYTES_MB）", err)
+		t.Errorf("error = %q, must name the byte-budget cause (incl. PDF2TEXT_HTML_MAX_TASK_BYTES_MB)", err)
 	}
 }

@@ -1,0 +1,322 @@
+[
+  {
+    "name": "simple_select",
+    "dialect": "mysql",
+    "sql": "SELECT id, name FROM users",
+    "roundtrip_dialect": "SELECT id, name FROM users",
+    "pretty": "SELECT\n    id,\n    name\nFROM users",
+    "roundtrip_default": "SELECT id, name FROM users"
+  },
+  {
+    "name": "select_star",
+    "dialect": "mysql",
+    "sql": "SELECT * FROM users",
+    "roundtrip_dialect": "SELECT * FROM users",
+    "pretty": "SELECT\n    *\nFROM users",
+    "roundtrip_default": "SELECT * FROM users"
+  },
+  {
+    "name": "select_where",
+    "dialect": "mysql",
+    "sql": "SELECT id, name FROM users WHERE age > 18 ORDER BY name DESC",
+    "roundtrip_dialect": "SELECT id, name FROM users WHERE age > 18 ORDER BY name DESC",
+    "pretty": "SELECT\n    id,\n    name\nFROM users\nWHERE\n    age > 18\nORDER BY\n    name DESC",
+    "roundtrip_default": "SELECT id, name FROM users WHERE age > 18 ORDER BY name DESC"
+  },
+  {
+    "name": "select_alias_tbl",
+    "dialect": "mysql",
+    "sql": "SELECT u.id, u.name FROM users AS u WHERE u.age > 18",
+    "roundtrip_dialect": "SELECT u.id, u.name FROM users AS u WHERE u.age > 18",
+    "pretty": "SELECT\n    u.id,\n    u.name\nFROM users AS u\nWHERE\n    u.age > 18",
+    "roundtrip_default": "SELECT u.id, u.name FROM users AS u WHERE u.age > 18"
+  },
+  {
+    "name": "select_join",
+    "dialect": "mysql",
+    "sql": "SELECT u.name, COUNT(o.id) FROM users u JOIN orders o ON u.id = o.user_id GROUP BY u.name",
+    "roundtrip_dialect": "SELECT u.name, COUNT(o.id) FROM users AS u JOIN orders AS o ON u.id = o.user_id GROUP BY u.name",
+    "pretty": "SELECT\n    u.name,\n    COUNT(o.id)\nFROM users AS u\nJOIN orders AS o\n    ON u.id = o.user_id\nGROUP BY\n    u.name",
+    "roundtrip_default": "SELECT u.name, COUNT(o.id) FROM users AS u JOIN orders AS o ON u.id = o.user_id GROUP BY u.name"
+  },
+  {
+    "name": "select_agg_no_group",
+    "dialect": "mysql",
+    "sql": "SELECT u.name, COUNT(o.id) FROM users u JOIN orders o ON u.id = o.user_id",
+    "roundtrip_dialect": "SELECT u.name, COUNT(o.id) FROM users AS u JOIN orders AS o ON u.id = o.user_id",
+    "pretty": "SELECT\n    u.name,\n    COUNT(o.id)\nFROM users AS u\nJOIN orders AS o\n    ON u.id = o.user_id",
+    "roundtrip_default": "SELECT u.name, COUNT(o.id) FROM users AS u JOIN orders AS o ON u.id = o.user_id"
+  },
+  {
+    "name": "select_agg_order",
+    "dialect": "mysql",
+    "sql": "SELECT a FROM x ORDER BY MAX(b)",
+    "roundtrip_dialect": "SELECT a FROM x ORDER BY MAX(b)",
+    "pretty": "SELECT\n    a\nFROM x\nORDER BY\n    MAX(b)",
+    "roundtrip_default": "SELECT a FROM x ORDER BY MAX(b)"
+  },
+  {
+    "name": "cte_mysql8",
+    "dialect": "mysql",
+    "sql": "WITH cte AS (SELECT id FROM users) SELECT * FROM cte",
+    "roundtrip_dialect": "WITH cte AS (SELECT id FROM users) SELECT * FROM cte",
+    "pretty": "WITH cte AS (\n    SELECT\n        id\n    FROM users\n)\nSELECT\n    *\nFROM cte",
+    "roundtrip_default": "WITH cte AS (SELECT id FROM users) SELECT * FROM cte"
+  },
+  {
+    "name": "cte_mysql5",
+    "dialect": "mysql",
+    "sql": "WITH cte AS (SELECT id FROM users) SELECT * FROM cte",
+    "roundtrip_dialect": "WITH cte AS (SELECT id FROM users) SELECT * FROM cte",
+    "pretty": "WITH cte AS (\n    SELECT\n        id\n    FROM users\n)\nSELECT\n    *\nFROM cte",
+    "roundtrip_default": "WITH cte AS (SELECT id FROM users) SELECT * FROM cte"
+  },
+  {
+    "name": "cte_mysql5_join",
+    "dialect": "mysql",
+    "sql": "WITH cte AS (SELECT id, name FROM users WHERE age > 18) SELECT c.id, b.x FROM cte c JOIN b ON c.id = b.id WHERE c.name LIKE 'A%'",
+    "roundtrip_dialect": "WITH cte AS (SELECT id, name FROM users WHERE age > 18) SELECT c.id, b.x FROM cte AS c JOIN b ON c.id = b.id WHERE c.name LIKE 'A%'",
+    "pretty": "WITH cte AS (\n    SELECT\n        id,\n        name\n    FROM users\n    WHERE\n        age > 18\n)\nSELECT\n    c.id,\n    b.x\nFROM cte AS c\nJOIN b\n    ON c.id = b.id\nWHERE\n    c.name LIKE 'A%'",
+    "roundtrip_default": "WITH cte AS (SELECT id, name FROM users WHERE age > 18) SELECT c.id, b.x FROM cte AS c JOIN b ON c.id = b.id WHERE c.name LIKE 'A%'"
+  },
+  {
+    "name": "in_limit_subquery",
+    "dialect": "mysql",
+    "sql": "SELECT * FROM orders WHERE user_id IN (SELECT id FROM users LIMIT 10)",
+    "roundtrip_dialect": "SELECT * FROM orders WHERE user_id IN (SELECT id FROM users LIMIT 10)",
+    "pretty": "SELECT\n    *\nFROM orders\nWHERE\n    user_id IN (\n        SELECT\n            id\n        FROM users\n        LIMIT 10\n    )",
+    "roundtrip_default": "SELECT * FROM orders WHERE user_id IN (SELECT id FROM users LIMIT 10)"
+  },
+  {
+    "name": "limit_exists",
+    "dialect": "mysql",
+    "sql": "SELECT id FROM users LIMIT 5",
+    "roundtrip_dialect": "SELECT id FROM users LIMIT 5",
+    "pretty": "SELECT\n    id\nFROM users\nLIMIT 5",
+    "roundtrip_default": "SELECT id FROM users LIMIT 5"
+  },
+  {
+    "name": "limit_larger",
+    "dialect": "mysql",
+    "sql": "SELECT id FROM users LIMIT 500",
+    "roundtrip_dialect": "SELECT id FROM users LIMIT 500",
+    "pretty": "SELECT\n    id\nFROM users\nLIMIT 500",
+    "roundtrip_default": "SELECT id FROM users LIMIT 500"
+  },
+  {
+    "name": "postgres_basic",
+    "dialect": "postgres",
+    "sql": "SELECT id, name FROM users WHERE age > 18",
+    "roundtrip_dialect": "SELECT id, name FROM users WHERE age > 18",
+    "pretty": "SELECT\n    id,\n    name\nFROM users\nWHERE\n    age > 18",
+    "roundtrip_default": "SELECT id, name FROM users WHERE age > 18"
+  },
+  {
+    "name": "postgres_schema",
+    "dialect": "postgres",
+    "sql": "SELECT u.name, COUNT(o.id) FROM users u JOIN orders o ON u.id = o.user_id",
+    "roundtrip_dialect": "SELECT u.name, COUNT(o.id) FROM users AS u JOIN orders AS o ON u.id = o.user_id",
+    "pretty": "SELECT\n    u.name,\n    COUNT(o.id)\nFROM users AS u\nJOIN orders AS o\n    ON u.id = o.user_id",
+    "roundtrip_default": "SELECT u.name, COUNT(o.id) FROM users AS u JOIN orders AS o ON u.id = o.user_id"
+  },
+  {
+    "name": "sqlite_basic",
+    "dialect": "sqlite",
+    "sql": "SELECT id, name FROM users LIMIT 20",
+    "roundtrip_dialect": "SELECT id, name FROM users LIMIT 20",
+    "pretty": "SELECT\n    id,\n    name\nFROM users\nLIMIT 20",
+    "roundtrip_default": "SELECT id, name FROM users LIMIT 20"
+  },
+  {
+    "name": "oracle_basic",
+    "dialect": "oracle",
+    "sql": "SELECT id, name FROM users",
+    "roundtrip_dialect": "SELECT id, name FROM users",
+    "pretty": "SELECT\n    id,\n    name\nFROM users",
+    "roundtrip_default": "SELECT id, name FROM users"
+  },
+  {
+    "name": "mssql_passthrough",
+    "dialect": "mssql",
+    "sql": "SELECT TOP 10 id FROM users",
+    "roundtrip_dialect": "SELECT TOP 10 id FROM users",
+    "pretty": "SELECT TOP 10 id FROM users",
+    "roundtrip_default_error": "ParseError: Invalid expression / Unexpected token. Line 1, Col: 13.\n  SELECT TOP 10 id FROM users"
+  },
+  {
+    "name": "duckdb_basic",
+    "dialect": "duckdb",
+    "sql": "SELECT id, name FROM users LIMIT 10",
+    "roundtrip_dialect": "SELECT id, name FROM users LIMIT 10",
+    "pretty": "SELECT\n    id,\n    name\nFROM users\nLIMIT 10",
+    "roundtrip_default": "SELECT id, name FROM users LIMIT 10"
+  },
+  {
+    "name": "starrocks_basic",
+    "dialect": "starrocks",
+    "sql": "SELECT id, name FROM users",
+    "roundtrip_dialect": "SELECT id, name FROM users",
+    "pretty": "SELECT\n    id,\n    name\nFROM users",
+    "roundtrip_default": "SELECT id, name FROM users"
+  },
+  {
+    "name": "union_all",
+    "dialect": "mysql",
+    "sql": "SELECT id FROM a UNION ALL SELECT id FROM b",
+    "roundtrip_dialect": "SELECT id FROM a UNION ALL SELECT id FROM b",
+    "pretty": "SELECT\n    id\nFROM a\nUNION ALL\nSELECT\n    id\nFROM b",
+    "roundtrip_default": "SELECT id FROM a UNION ALL SELECT id FROM b"
+  },
+  {
+    "name": "case_when",
+    "dialect": "mysql",
+    "sql": "SELECT CASE WHEN age > 18 THEN 'adult' ELSE 'minor' END AS g, COUNT(*) FROM users GROUP BY g",
+    "roundtrip_dialect": "SELECT CASE WHEN age > 18 THEN 'adult' ELSE 'minor' END AS g, COUNT(*) FROM users GROUP BY g",
+    "pretty": "SELECT\n    CASE WHEN age > 18 THEN 'adult' ELSE 'minor' END AS g,\n    COUNT(*)\nFROM users\nGROUP BY\n    g",
+    "roundtrip_default": "SELECT CASE WHEN age > 18 THEN 'adult' ELSE 'minor' END AS g, COUNT(*) FROM users GROUP BY g"
+  },
+  {
+    "name": "nested_subquery",
+    "dialect": "mysql",
+    "sql": "SELECT * FROM (SELECT id, name FROM users WHERE age > 18) t WHERE t.id > 5",
+    "roundtrip_dialect": "SELECT * FROM (SELECT id, name FROM users WHERE age > 18) AS t WHERE t.id > 5",
+    "pretty": "SELECT\n    *\nFROM (\n    SELECT\n        id,\n        name\n    FROM users\n    WHERE\n        age > 18\n) AS t\nWHERE\n    t.id > 5",
+    "roundtrip_default": "SELECT * FROM (SELECT id, name FROM users WHERE age > 18) AS t WHERE t.id > 5"
+  },
+  {
+    "name": "no_limit_param",
+    "dialect": "mysql",
+    "sql": "SELECT id FROM users",
+    "roundtrip_dialect": "SELECT id FROM users",
+    "pretty": "SELECT\n    id\nFROM users",
+    "roundtrip_default": "SELECT id FROM users"
+  },
+  {
+    "name": "insert_not_query",
+    "dialect": "mysql",
+    "sql": "INSERT INTO users (name) VALUES ('Alice')",
+    "roundtrip_dialect": "INSERT INTO users (name) VALUES ('Alice')",
+    "pretty": "INSERT INTO users (\n    name\n)\nVALUES\n    ('Alice')",
+    "roundtrip_default": "INSERT INTO users (name) VALUES ('Alice')"
+  },
+  {
+    "name": "update_not_query",
+    "dialect": "mysql",
+    "sql": "UPDATE users SET name = 'x' WHERE id = 1",
+    "roundtrip_dialect": "UPDATE users SET name = 'x' WHERE id = 1",
+    "pretty": "UPDATE users SET name = 'x'\nWHERE\n    id = 1",
+    "roundtrip_default": "UPDATE users SET name = 'x' WHERE id = 1"
+  },
+  {
+    "name": "drop_not_query",
+    "dialect": "mysql",
+    "sql": "DROP TABLE users",
+    "roundtrip_dialect": "DROP TABLE users",
+    "pretty": "DROP TABLE users",
+    "roundtrip_default": "DROP TABLE users"
+  },
+  {
+    "name": "bad_syntax",
+    "dialect": "mysql",
+    "sql": "SELECT FROM WHERE",
+    "roundtrip_dialect_error": "ParseError: Expected table name but got <Token token_type: TokenType.WHERE, text: WHERE, line: 1, col: 17, start: 12, end: 16, comments: []>. Line 1, Col: 17.\n  SELECT FROM WHERE",
+    "pretty_error": "ParseError: Expected table name but got <Token token_type: TokenType.WHERE, text: WHERE, line: 1, col: 17, start: 12, end: 16, comments: []>. Line 1, Col: 17.\n  SELECT FROM WHERE",
+    "roundtrip_default_error": "ParseError: Expected table name but got <Token token_type: TokenType.WHERE, text: WHERE, line: 1, col: 17, start: 12, end: 16, comments: []>. Line 1, Col: 17.\n  SELECT FROM WHERE"
+  },
+  {
+    "name": "backtick_mysql",
+    "dialect": "mysql",
+    "sql": "SELECT `id`, `name` FROM `users` WHERE `age` > 18",
+    "roundtrip_dialect": "SELECT `id`, `name` FROM `users` WHERE `age` > 18",
+    "pretty": "SELECT\n    `id`,\n    `name`\nFROM `users`\nWHERE\n    `age` > 18",
+    "roundtrip_default_error": "ParseError: Invalid expression / Unexpected token. Line 1, Col: 11.\n  SELECT `id`, `name` FROM `users` WHERE `age` > 18"
+  },
+  {
+    "name": "quoted_oracle",
+    "dialect": "oracle",
+    "sql": "SELECT \"id\", \"name\" FROM \"users\"",
+    "roundtrip_dialect": "SELECT \"id\", \"name\" FROM \"users\"",
+    "pretty": "SELECT\n    \"id\",\n    \"name\"\nFROM \"users\"",
+    "roundtrip_default": "SELECT \"id\", \"name\" FROM \"users\""
+  },
+  {
+    "name": "bracket_mssql",
+    "dialect": "mssql",
+    "sql": "SELECT [id] FROM [users]",
+    "roundtrip_dialect": "SELECT [id] FROM [users]",
+    "pretty": "SELECT [id] FROM [users]",
+    "roundtrip_default_error": "ParseError: Expected table name but got <Token token_type: TokenType.L_BRACKET, text: [, line: 1, col: 18, start: 17, end: 17, comments: []>. Line 1, Col: 18.\n  SELECT [id] FROM [users]"
+  },
+  {
+    "name": "distinct",
+    "dialect": "mysql",
+    "sql": "SELECT DISTINCT city FROM users WHERE city IS NOT NULL LIMIT 3",
+    "roundtrip_dialect": "SELECT DISTINCT city FROM users WHERE NOT city IS NULL LIMIT 3",
+    "pretty": "SELECT DISTINCT\n    city\nFROM users\nWHERE\n    NOT city IS NULL\nLIMIT 3",
+    "roundtrip_default": "SELECT DISTINCT city FROM users WHERE NOT city IS NULL LIMIT 3"
+  },
+  {
+    "name": "between_and",
+    "dialect": "mysql",
+    "sql": "SELECT id FROM orders WHERE amount BETWEEN 10 AND 20 AND status = 'paid'",
+    "roundtrip_dialect": "SELECT id FROM orders WHERE amount BETWEEN 10 AND 20 AND status = 'paid'",
+    "pretty": "SELECT\n    id\nFROM orders\nWHERE\n    amount BETWEEN 10 AND 20 AND status = 'paid'",
+    "roundtrip_default": "SELECT id FROM orders WHERE amount BETWEEN 10 AND 20 AND status = 'paid'"
+  },
+  {
+    "name": "exists_sub",
+    "dialect": "mysql",
+    "sql": "SELECT id FROM users u WHERE EXISTS (SELECT 1 FROM orders o WHERE o.user_id = u.id)",
+    "roundtrip_dialect": "SELECT id FROM users AS u WHERE EXISTS(SELECT 1 FROM orders AS o WHERE o.user_id = u.id)",
+    "pretty": "SELECT\n    id\nFROM users AS u\nWHERE\n    EXISTS(\n        SELECT\n            1\n        FROM orders AS o\n        WHERE\n            o.user_id = u.id\n    )",
+    "roundtrip_default": "SELECT id FROM users AS u WHERE EXISTS(SELECT 1 FROM orders AS o WHERE o.user_id = u.id)"
+  },
+  {
+    "name": "cast_expr",
+    "dialect": "mysql",
+    "sql": "SELECT CAST(amount AS DOUBLE) AS amt FROM orders",
+    "roundtrip_dialect": "SELECT CAST(amount AS DOUBLE) AS amt FROM orders",
+    "pretty": "SELECT\n    CAST(amount AS DOUBLE) AS amt\nFROM orders",
+    "roundtrip_default": "SELECT CAST(amount AS DOUBLE) AS amt FROM orders"
+  },
+  {
+    "name": "percentage",
+    "dialect": "mysql",
+    "sql": "SELECT COUNT(*) FILTER (WHERE status = 'paid') / COUNT(*) AS ratio FROM orders",
+    "roundtrip_dialect": "SELECT COUNT(*) FILTER(WHERE status = 'paid') / COUNT(*) AS ratio FROM orders",
+    "pretty": "SELECT\n    COUNT(*) FILTER(WHERE\n        status = 'paid') / COUNT(*) AS ratio\nFROM orders",
+    "roundtrip_default": "SELECT COUNT(*) FILTER(WHERE status = 'paid') / COUNT(*) AS ratio FROM orders"
+  },
+  {
+    "name": "group_having",
+    "dialect": "postgres",
+    "sql": "SELECT city, COUNT(*) AS c FROM users GROUP BY city HAVING COUNT(*) > 10 ORDER BY c DESC",
+    "roundtrip_dialect": "SELECT city, COUNT(*) AS c FROM users GROUP BY city HAVING COUNT(*) > 10 ORDER BY c DESC",
+    "pretty": "SELECT\n    city,\n    COUNT(*) AS c\nFROM users\nGROUP BY\n    city\nHAVING\n    COUNT(*) > 10\nORDER BY\n    c DESC",
+    "roundtrip_default": "SELECT city, COUNT(*) AS c FROM users GROUP BY city HAVING COUNT(*) > 10 ORDER BY c DESC"
+  },
+  {
+    "name": "multi_join",
+    "dialect": "mysql",
+    "sql": "SELECT a.id, b.name, c.amt FROM a JOIN b ON a.bid = b.id LEFT JOIN c ON c.aid = a.id WHERE a.x = 1",
+    "roundtrip_dialect": "SELECT a.id, b.name, c.amt FROM a JOIN b ON a.bid = b.id LEFT JOIN c ON c.aid = a.id WHERE a.x = 1",
+    "pretty": "SELECT\n    a.id,\n    b.name,\n    c.amt\nFROM a\nJOIN b\n    ON a.bid = b.id\nLEFT JOIN c\n    ON c.aid = a.id\nWHERE\n    a.x = 1",
+    "roundtrip_default": "SELECT a.id, b.name, c.amt FROM a JOIN b ON a.bid = b.id LEFT JOIN c ON c.aid = a.id WHERE a.x = 1"
+  },
+  {
+    "name": "starrocks_agg_examples",
+    "dialect": "starrocks",
+    "sql": "SELECT city, COUNT(*) FROM users GROUP BY city",
+    "roundtrip_dialect": "SELECT city, COUNT(*) FROM users GROUP BY city",
+    "pretty": "SELECT\n    city,\n    COUNT(*)\nFROM users\nGROUP BY\n    city",
+    "roundtrip_default": "SELECT city, COUNT(*) FROM users GROUP BY city"
+  },
+  {
+    "name": "empty_sql",
+    "dialect": "mysql",
+    "sql": "",
+    "roundtrip_dialect_error": "ParseError: No expression was parsed from ''",
+    "pretty": "",
+    "roundtrip_default_error": "ParseError: No expression was parsed from ''"
+  }
+]

@@ -21,7 +21,7 @@ func getMaxUploadSize() int {
 	return 100 * 1024 * 1024
 }
 
-// ChunkRequest chunk 请求体
+// ChunkRequest is the chunk request body.
 type ChunkRequest struct {
 	Markdown   string         `json:"markdown"`
 	ChunkSizes map[string]int `json:"chunk_sizes"`

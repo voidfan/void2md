@@ -93,7 +93,11 @@ func (s *DuckdbS3Store) newClient(ctx context.Context) (*s3.Client, error) {
 	}
 	return s3.NewFromConfig(cfg, func(o *s3.Options) {
 		o.BaseEndpoint = aws.String(s.EndpointURL)
-		// Addressing style is left at the SDK default, as Python does.
+		// S3-compatible endpoints (MinIO) are usually addressed path-style:
+		// bucket.host does not resolve unless wildcard DNS is configured. The
+		// DuckDB secret below already uses URL_STYLE 'path', so keep the SDK
+		// consistent with it rather than silently requiring virtual-host DNS.
+		o.UsePathStyle = true
 	}), nil
 }
 
@@ -119,9 +123,9 @@ func (s *DuckdbS3Store) getConn() (duckdbConn, error) {
 	return conn, nil
 }
 
-// secretSQL builds the CREATE SECRET statement. Python quirk preserved: the
-// region goes through repr (!r), so a non-empty region is stored double-quoted
-// (e.g. `'us-east-1'`).
+// secretSQL builds the CREATE SECRET statement. The region goes through
+// pythonRepr, which already adds its own quotes; the template must not add a
+// second pair (REGION ''us-east-1'' is a parser error).
 func (s *DuckdbS3Store) secretSQL() string {
 	useSSL := "false"
 	if s.UseSSL {
@@ -135,7 +139,7 @@ CREATE OR REPLACE SECRET secret (
     SECRET '%s',
     USE_SSL %s,
     URL_STYLE 'path',
-    REGION '%s',
+    REGION %s,
     SCOPE 's3://%s'
 );
 `, s.Endpoint, s.AccessKey, s.SecretKey, useSSL, pythonRepr(s.Region), s.Bucket)
@@ -263,8 +267,16 @@ func (s *DuckdbS3Store) insertData(
 		}
 		code, convErr := strconv.Atoi(apiErr.ErrorCode())
 		if convErr != nil {
-			// Python: int(code) raises ValueError, which bubbles up.
-			return "", fmt.Errorf("invalid literal for int() with base 10: '%s'", apiErr.ErrorCode())
+			// MinIO reports a missing bucket as "NotFound"/"NoSuchBucket" rather
+			// than the numeric "404" the AWS SDK can hand back. Both mean the same
+			// thing here: create the bucket and retry the upload.
+			switch apiErr.ErrorCode() {
+			case "NotFound", "NoSuchBucket":
+				code = 404
+			default:
+				// Python: int(code) raises ValueError, which bubbles up.
+				return "", fmt.Errorf("invalid literal for int() with base 10: '%s'", apiErr.ErrorCode())
+			}
 		}
 		if code == 404 {
 			_, _ = s.s3.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String(s.Bucket)})

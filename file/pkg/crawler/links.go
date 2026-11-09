@@ -9,6 +9,8 @@ import (
 
 	"golang.org/x/net/html"
 	"golang.org/x/net/publicsuffix"
+
+	"void2md/file/pkg/parse"
 )
 
 // staticAssetExts are path extensions skipped (not page content).
@@ -102,25 +104,75 @@ func IsStaticAsset(p string) bool {
 // (design §4.2 step 10: must be the whole document, otherwise pagination
 // links in nav bars are never discovered). Skips fragment-only / mailto /
 // non-http(s) / static assets / duplicates.
+//
+// The returned order is primary links first, then secondary links (see
+// ExtractLinksPrioritized); callers that only need the set are unaffected.
 func ExtractLinks(doc *html.Node, base *url.URL) []string {
-	var out []string
-	seen := make(map[string]bool)
+	primary, secondary := ExtractLinksPrioritized(doc, base)
+	return append(primary, secondary...)
+}
 
-	var walk func(n *html.Node)
-	walk = func(n *html.Node) {
-		if n.Type == html.ElementNode && n.Data == "a" {
-			href := getAttr(n, "href")
-			if abs, ok := resolveLink(base, href); ok && !seen[abs] {
-				seen[abs] = true
-				out = append(out, abs)
+// ExtractLinksPrioritized splits links into two priority classes:
+//
+//   - primary: links that are likely document content — same exact host as the
+//     page and not inside page chrome (header/footer/sidebar/share/comment).
+//     <nav>/<menu>/pagination containers are NOT chrome, so next-page links
+//     in a nav bar stay primary.
+//   - secondary: links from page chrome, or links that leave the exact host
+//     (including sibling subdomains of the same eTLD+1).
+//
+// The crawler enqueues primary before secondary, so maxPage is spent on the
+// content tree instead of the site header/footer. Secondary links are still
+// followed when primary links run out, preserving whole-site reachability.
+//
+// Dedup and first-occurrence order are preserved; a URL that appears in both
+// classes is promoted to primary.
+func ExtractLinksPrioritized(doc *html.Node, base *url.URL) (primary, secondary []string) {
+	var order []string
+	seen := make(map[string]bool)
+	primarySet := make(map[string]bool)
+
+	var walk func(n *html.Node, chrome bool)
+	walk = func(n *html.Node, chrome bool) {
+		if n.Type == html.ElementNode {
+			if parse.IsLinkChromeContainer(n) {
+				chrome = true
+			}
+			if n.Data == "a" {
+				href := getAttr(n, "href")
+				if abs, ok := resolveLink(base, href); ok {
+					if !seen[abs] {
+						seen[abs] = true
+						order = append(order, abs)
+					}
+					if !chrome {
+						if u, err := url.Parse(abs); err == nil && sameExactHost(base, u) {
+							primarySet[abs] = true
+						}
+					}
+				}
 			}
 		}
 		for c := n.FirstChild; c != nil; c = c.NextSibling {
-			walk(c)
+			walk(c, chrome)
 		}
 	}
-	walk(doc)
-	return out
+	walk(doc, false)
+
+	for _, u := range order {
+		if primarySet[u] {
+			primary = append(primary, u)
+		} else {
+			secondary = append(secondary, u)
+		}
+	}
+	return primary, secondary
+}
+
+// sameExactHost compares hosts ignoring case and default ports. It is stricter
+// than SameHost: sibling subdomains are secondary links, not primary.
+func sameExactHost(a, b *url.URL) bool {
+	return strings.EqualFold(stripPort(a.Host), stripPort(b.Host))
 }
 
 // resolveLink resolves href against base into a normalized absolute URL;
@@ -148,6 +200,28 @@ func resolveLink(base *url.URL, href string) (string, bool) {
 	return u.String(), true
 }
 
+// utilityPathSegments are URL path segments that never contain article pages:
+// legal agreements, auth/account flows and site search. Matching is by exact
+// path segment, so "/docs/user-guide" and "/api/protocol-buffer" are safe.
+var utilityPathSegments = map[string]bool{
+	"login": true, "logout": true, "register": true, "signin": true, "signup": true,
+	"account": true, "cart": true, "checkout": true, "search": true,
+	"protocol": true, "privacy": true, "terms": true, "agreement": true,
+	"license": true, "legal": true, "cookie": true, "consent": true,
+}
+
+// isUtilityURL reports common non-content pages (user agreement, privacy
+// policy, login/account, search). Crawling these wastes maxPage and pollutes
+// the knowledge base with legal boilerplate.
+func isUtilityURL(u *url.URL) bool {
+	for _, seg := range strings.Split(strings.ToLower(u.Path), "/") {
+		if utilityPathSegments[seg] {
+			return true
+		}
+	}
+	return false
+}
+
 // ShouldEnqueue decides whether a normalized absolute link enters the crawl
 // frontier. This is the single implementation point of design §4.2 step 11
 // (enqueue filter): not visited + parseable + same domain. **Must be called
@@ -158,6 +232,9 @@ func ShouldEnqueue(link string, entry *url.URL, visited map[string]bool) bool {
 	}
 	u, err := url.Parse(link)
 	if err != nil {
+		return false
+	}
+	if isUtilityURL(u) {
 		return false
 	}
 	return SameHost(entry, u)

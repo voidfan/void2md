@@ -14,8 +14,7 @@ import (
 	"github.com/duckdb/duckdb-go/v2"
 )
 
-// CGO implementation of duckdbConn on top of duckdb-go/v2 (DuckDB 1.5.5,
-// matching the Python parity environment).
+// CGO implementation of duckdbConn on top of duckdb-go/v2 (DuckDB 2.0.0).
 
 // duckdbSQLConn carries a duckdb connection on top of database/sql.
 type duckdbSQLConn struct {

@@ -147,6 +147,65 @@ func TestExtractLinks(t *testing.T) {
 	}
 }
 
+// TestExtractLinksPrioritized pins the crawl budget policy: content/nav links
+// on the exact host enter primary, while header/footer chrome and cross-host
+// (including sibling subdomains) links are deferred to secondary.
+func TestExtractLinksPrioritized(t *testing.T) {
+	const page = `<html><body>
+		<div class="public-header">
+			<a href="/home">Home</a>
+			<a href="https://www.example.com/marketing">Marketing</a>
+		</div>
+		<main>
+			<a href="/docs/a">A</a>
+			<a href="https://api.example.com/b">B</a>
+		</main>
+		<nav><a href="/docs/next">Next</a></nav>
+		<footer><a href="/common/protocol">Protocol</a></footer>
+	</body></html>`
+
+	doc, err := html.Parse(strings.NewReader(page))
+	if err != nil {
+		t.Fatalf("parse fixture: %v", err)
+	}
+	base, _ := NormalizeURL("https://support.example.com/docs/")
+
+	primary, secondary := ExtractLinksPrioritized(doc, base)
+	contains := func(list []string, want string) bool {
+		for _, u := range list {
+			if u == want {
+				return true
+			}
+		}
+		return false
+	}
+	for _, want := range []string{
+		"https://support.example.com/docs/a",
+		"https://support.example.com/docs/next", // nav is deliberately not chrome
+	} {
+		if !contains(primary, want) {
+			t.Errorf("primary missing %q; primary=%v secondary=%v", want, primary, secondary)
+		}
+	}
+	for _, want := range []string{
+		"https://support.example.com/home",            // header chrome
+		"https://www.example.com/marketing",           // chrome + cross-host
+		"https://api.example.com/b",                   // same eTLD+1 but different exact host
+		"https://support.example.com/common/protocol", // footer chrome
+	} {
+		if !contains(secondary, want) {
+			t.Errorf("secondary missing %q; primary=%v secondary=%v", want, primary, secondary)
+		}
+	}
+
+	// ExtractLinks remains the union, so callers/tests that only need the set
+	// see the same URLs as before.
+	all := ExtractLinks(doc, base)
+	if len(all) != len(primary)+len(secondary) {
+		t.Errorf("ExtractLinks len = %d, want %d (primary %d + secondary %d)", len(all), len(primary)+len(secondary), len(primary), len(secondary))
+	}
+}
+
 // TestShouldEnqueue is the core assertion of design §4.2 step 11 (enqueue filter):
 // cross-domain links rejected, same-domain (incl. subdomains) accepted, visited rejected.
 //
@@ -171,6 +230,11 @@ func TestShouldEnqueue(t *testing.T) {
 		{"cross subdomain of different tld", "https://doc.example.org/a", false},
 		{"already visited", "https://doc.example.com/seen", false},
 		{"unparseable", "://bad", false},
+		{"user agreement", "https://doc.example.com/common/protocol?type=1", false},
+		{"privacy policy", "https://doc.example.com/privacy", false},
+		{"login", "https://doc.example.com/login", false},
+		{"docs user guide is content", "https://doc.example.com/docs/user-guide", true},
+		{"protocol prefix is content", "https://doc.example.com/docs/protocol-buffer", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

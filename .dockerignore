@@ -1,0 +1,33 @@
+# Keep the build context small — a smaller context uploads faster and avoids
+# invalidating cache layers when unrelated files change.
+
+# VCS / IDE / OS junk
+.git
+.gitignore
+.vscode
+.idea
+.DS_Store
+
+# Rust build artifacts and local toolchain state
+**/target
+**/.rustc_info.json
+
+# Go build artifacts
+*.test
+*.out
+
+# Node artifacts (if the native tokenizer is built locally)
+**/node_modules
+
+# Local deployment helpers / packaged sources not needed in the image
+dbx
+*.zip
+*.log
+deploy.sh
+docker-compose.yml
+README.md
+REDAM
+docs
+
+# Large fixture trees that are not part of the runtime image or the build
+file/TestCase

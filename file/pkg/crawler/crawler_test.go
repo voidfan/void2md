@@ -647,3 +647,67 @@ func TestCrawl_MaxTaskBytesBeforeAnyPageMessage(t *testing.T) {
 		t.Errorf("error = %q, must name the byte-budget cause (incl. PDF2TEXT_HTML_MAX_TASK_BYTES_MB)", err)
 	}
 }
+
+// TestCrawl_PrioritizesContentLinks pins the crawl-budget policy: header and
+// footer links are deferred so maxPage is spent on the document link, not on
+// site chrome. With MaxPage=2, only the entry page and the <main> link fit.
+func TestCrawl_PrioritizesContentLinks(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		switch r.URL.Path {
+		case "/":
+			_, _ = w.Write([]byte(`<html><body>
+				<div class="public-header"><a href="/noise">Noise</a></div>
+				<main><p>home</p><a href="/doc">Doc</a></main>
+				<footer><a href="/legal">Legal</a></footer>
+			</body></html>`))
+		case "/doc":
+			_, _ = w.Write([]byte(`<html><body><p>doc body</p></body></html>`))
+		default:
+			_, _ = w.Write([]byte(`<html><body><p>noise body</p></body></html>`))
+		}
+	}))
+	defer srv.Close()
+
+	opts := defaultOpts(srv.URL + "/")
+	opts.MaxPage = 2
+	res, err := Crawl(context.Background(), opts, nil)
+	if err != nil {
+		t.Fatalf("Crawl error: %v", err)
+	}
+	if len(res.Pages) != 2 {
+		t.Fatalf("pages = %d, want 2; urls=%v", len(res.Pages), pageURLs(res))
+	}
+	if got := res.Pages[1].URL; got != srv.URL+"/doc" {
+		t.Errorf("second page = %q, want %q: content links must be enqueued before header/footer chrome; urls=%v",
+			got, srv.URL+"/doc", pageURLs(res))
+	}
+}
+
+// TestCrawl_DuplicatePagesSkipped pins content dedup: identical title + long
+// Markdown from different shell URLs is kept once, so it does not consume
+// maxPage (tab variants are the common real-world case).
+func TestCrawl_DuplicatePagesSkipped(t *testing.T) {
+	longBody := `<html><head><title>Same Shell</title></head><body><p>` +
+		strings.Repeat("重复的导航外壳内容。", 20) + `</p></body></html>`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		switch r.URL.Path {
+		case "/":
+			_, _ = w.Write([]byte(`<html><body><p>home</p><a href="/a">a</a><a href="/b">b</a></body></html>`))
+		default:
+			_, _ = w.Write([]byte(longBody))
+		}
+	}))
+	defer srv.Close()
+
+	opts := defaultOpts(srv.URL + "/")
+	opts.MaxPage = 3
+	res, err := Crawl(context.Background(), opts, nil)
+	if err != nil {
+		t.Fatalf("Crawl error: %v", err)
+	}
+	if len(res.Pages) != 2 {
+		t.Fatalf("pages = %d, want 2 (entry + one unique shell); urls=%v", len(res.Pages), pageURLs(res))
+	}
+}

@@ -60,8 +60,9 @@ func newProbeStore(t *testing.T) *duckdbBase {
 	return store
 }
 
-// TestDuckdbEngineVersion pins the engine to DuckDB 1.5.5 — the version of the
-// Python parity environment (authoritative over uv.lock's 1.4.x).
+// TestDuckdbEngineVersion pins the engine version. duckdb-go/v2 v2.20000.0
+// ships DuckDB v2.0.0; the bundled extensions in structured/duckdb_extensions
+// are downloaded for that exact version.
 func TestDuckdbEngineVersion(t *testing.T) {
 	conn, err := openDuckDBConn("")
 	if err != nil {
@@ -76,8 +77,8 @@ func TestDuckdbEngineVersion(t *testing.T) {
 	if len(rows) != 1 || len(rows[0]) != 1 {
 		t.Fatalf("version returned an unexpected shape: %v", rows)
 	}
-	if got := rows[0][0]; got != "v1.5.5" {
-		t.Fatalf("engine version = %v, want v1.5.5 (aligned with duckdb 1.5.5 in the Python parity environment)", got)
+	if got := rows[0][0]; got != "v2.0.0" {
+		t.Fatalf("engine version = %v, want v2.0.0 (duckdb-go/v2 v2.20000.0)", got)
 	}
 }
 

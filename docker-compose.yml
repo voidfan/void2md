@@ -3,10 +3,18 @@ services:
     image: void2md/void2md:latest
     build:
       context: .
-    network_mode: host
+    # Publish the API port. (network_mode: host does not expose ports to the
+    # macOS host with Docker Desktop; use host mode only on a Linux host.)
+    ports:
+      - "3457:3457"
     volumes:
       # Overrides the dbc config inside the container (matches DBC_CONFIG in the Dockerfile)
       - ./dbc/config/config.json:/app/dbc/config/config.json:ro
+    # Lets the structured S3 store reach object storage published on the host
+    # (the file_database knowledge-base feature). Docker Desktop provides this
+    # name already; the entry makes it work on Linux too.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
 
   dbx:

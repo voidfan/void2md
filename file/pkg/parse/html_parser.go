@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"path"
 	"regexp"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -71,6 +73,10 @@ func ParseHTMLBytesToMarkdownWithCharset(ctx context.Context, htmlBytes []byte, 
 	if err != nil {
 		return "", 0, fmt.Errorf("html parse error: %w", err)
 	}
+
+	// Strip navigation, sidebars, footers, ads, share widgets and link farms
+	// before rendering; otherwise a news page yields more chrome than article.
+	pruneBoilerplate(doc)
 
 	var buf bytes.Buffer
 	renderNode(&buf, doc)
@@ -195,7 +201,7 @@ func getCharsetDecoder(charset string) transform.Transformer {
 func renderNode(buf *bytes.Buffer, n *html.Node) {
 	if n.Type == html.TextNode {
 		text := strings.TrimSpace(n.Data)
-		if text != "" {
+		if text != "" && !isTemplateOnlyText(text) {
 			buf.WriteString(text)
 		}
 		return
@@ -209,61 +215,72 @@ func renderNode(buf *bytes.Buffer, n *html.Node) {
 	}
 
 	switch n.Data {
-	case "script", "style", "noscript":
+	case "script", "style", "noscript", "template":
 		return
 
 	case "h1", "h2", "h3", "h4", "h5", "h6":
+		inner := renderInlineText(n)
+		if strings.TrimSpace(inner) == "" {
+			return
+		}
 		level := int(n.Data[1] - '0')
 		buf.WriteString("\n\n")
 		buf.WriteString(strings.Repeat("#", level))
 		buf.WriteString(" ")
-		renderChildrenInline(buf, n)
+		buf.WriteString(inner)
 		buf.WriteString("\n\n")
 
 	case "p":
+		inner := renderInlineText(n)
+		if strings.TrimSpace(inner) == "" {
+			return
+		}
 		buf.WriteString("\n\n")
-		renderChildrenInline(buf, n)
+		buf.WriteString(inner)
 		buf.WriteString("\n\n")
 
 	case "br":
 		buf.WriteString("\n")
 
 	case "li":
+		inner := renderInlineText(n)
+		if strings.TrimSpace(inner) == "" {
+			return
+		}
 		buf.WriteString("\n- ")
-		renderChildrenInline(buf, n)
+		buf.WriteString(inner)
 
 	case "table":
+		if strings.TrimSpace(extractText(n)) == "" {
+			return
+		}
 		buf.WriteString("\n\n")
 		buf.WriteString(extractHTML(n))
 		buf.WriteString("\n\n")
 
 	case "img":
-		alt := getAttr(n, "alt")
-		src := getAttr(n, "src")
-		buf.WriteString(fmt.Sprintf("![%s](%s)", alt, src))
+		src := imageSrc(n)
+		if !isUsableImageSrc(src) || isTrackingPixel(n) || isDecorativeImage(n) {
+			return
+		}
+		buf.WriteString(fmt.Sprintf("![%s](%s)", getAttr(n, "alt"), src))
 
 	case "a":
-		href := getAttr(n, "href")
-		buf.WriteString("[")
-		renderChildrenInline(buf, n)
-		buf.WriteString("](")
-		buf.WriteString(href)
-		buf.WriteString(")")
+		writeLink(buf, n)
 
 	case "b", "strong":
-		buf.WriteString("**")
-		renderChildrenInline(buf, n)
-		buf.WriteString("**")
+		writeEmphasis(buf, n, "**")
 
 	case "i", "em":
-		buf.WriteString("*")
-		renderChildrenInline(buf, n)
-		buf.WriteString("*")
+		writeEmphasis(buf, n, "*")
 
 	case "pre", "code":
+		text := strings.TrimSpace(extractText(n))
+		if text == "" {
+			return
+		}
 		buf.WriteString("\n```\n")
-		text := extractText(n)
-		buf.WriteString(strings.TrimSpace(text))
+		buf.WriteString(text)
 		buf.WriteString("\n```\n")
 
 	case "ul", "ol", "div", "span", "section", "article", "header", "footer", "main", "nav":
@@ -283,39 +300,198 @@ func renderChildrenInline(buf *bytes.Buffer, n *html.Node) {
 	for c := n.FirstChild; c != nil; c = c.NextSibling {
 		if c.Type == html.TextNode {
 			text := strings.TrimSpace(c.Data)
-			buf.WriteString(text)
+			if !isTemplateOnlyText(text) {
+				buf.WriteString(text)
+			}
 		} else if c.Type == html.ElementNode {
 			switch c.Data {
 			case "br":
 				buf.WriteString("\n")
 			case "b", "strong":
-				buf.WriteString("**")
-				renderChildrenInline(buf, c)
-				buf.WriteString("**")
+				writeEmphasis(buf, c, "**")
 			case "i", "em":
-				buf.WriteString("*")
-				renderChildrenInline(buf, c)
-				buf.WriteString("*")
+				writeEmphasis(buf, c, "*")
 			case "a":
-				href := getAttr(c, "href")
-				buf.WriteString("[")
-				renderChildrenInline(buf, c)
-				buf.WriteString("](")
-				buf.WriteString(href)
-				buf.WriteString(")")
+				writeLink(buf, c)
 			case "img":
-				alt := getAttr(c, "alt")
-				src := getAttr(c, "src")
-				buf.WriteString(fmt.Sprintf("![%s](%s)", alt, src))
+				src := imageSrc(c)
+				if !isUsableImageSrc(src) || isTrackingPixel(c) || isDecorativeImage(c) {
+					continue
+				}
+				buf.WriteString(fmt.Sprintf("![%s](%s)", getAttr(c, "alt"), src))
 			case "code":
+				inner := strings.TrimSpace(extractText(c))
+				if inner == "" {
+					continue
+				}
 				buf.WriteString("`")
-				renderChildrenInline(buf, c)
+				buf.WriteString(inner)
 				buf.WriteString("`")
 			default:
 				renderChildrenInline(buf, c)
 			}
 		}
 	}
+}
+
+// renderInlineText renders a node's children as inline Markdown.
+func renderInlineText(n *html.Node) string {
+	var buf bytes.Buffer
+	renderChildrenInline(&buf, n)
+	return buf.String()
+}
+
+// writeLink renders <a> as a Markdown link. Links with no text are dropped
+// entirely; links with no usable target (empty, "#", javascript:) keep their
+// text so share/action controls do not leave "[](#)" artifacts behind.
+func writeLink(buf *bytes.Buffer, n *html.Node) {
+	inner := renderInlineText(n)
+	if strings.TrimSpace(inner) == "" {
+		return
+	}
+	href := strings.TrimSpace(getAttr(n, "href"))
+	if isNonNavigableHref(href) {
+		buf.WriteString(inner)
+		return
+	}
+	buf.WriteString("[")
+	buf.WriteString(inner)
+	buf.WriteString("](")
+	buf.WriteString(href)
+	buf.WriteString(")")
+}
+
+// isNonNavigableHref reports hrefs that must not become Markdown links.
+// In-page anchors ("#section") stay links; a bare "#" does not.
+func isNonNavigableHref(href string) bool {
+	h := strings.ToLower(strings.TrimSpace(href))
+	return h == "" || h == "#" ||
+		strings.HasPrefix(h, "javascript:") ||
+		strings.HasPrefix(h, "vbscript:") ||
+		strings.HasPrefix(h, "data:")
+}
+
+// writeEmphasis renders bold/italic, skipping empty content so bare "****"
+// and "**" fragments never reach the Markdown.
+func writeEmphasis(buf *bytes.Buffer, n *html.Node, marker string) {
+	inner := renderInlineText(n)
+	if strings.TrimSpace(inner) == "" {
+		return
+	}
+	buf.WriteString(marker)
+	buf.WriteString(inner)
+	buf.WriteString(marker)
+}
+
+// imageSrc returns the real image URL, preferring common lazy-loading
+// attributes when src is missing or is a data-URI placeholder.
+func imageSrc(n *html.Node) string {
+	src := strings.TrimSpace(getAttr(n, "src"))
+	if src == "" || strings.HasPrefix(strings.ToLower(src), "data:") {
+		for _, key := range []string{"data-src", "data-original", "data-lazy-src", "data-actualsrc", "data-url"} {
+			if v := strings.TrimSpace(getAttr(n, key)); v != "" {
+				return v
+			}
+		}
+	}
+	return src
+}
+
+// isUsableImageSrc reports whether src can produce a Markdown image.
+func isUsableImageSrc(src string) bool {
+	s := strings.ToLower(strings.TrimSpace(src))
+	return s != "" &&
+		!strings.HasPrefix(s, "javascript:") &&
+		!strings.HasPrefix(s, "vbscript:")
+}
+
+// isTrackingPixel reports 1x1/0x0 images without alt text (analytics pixels).
+func isTrackingPixel(n *html.Node) bool {
+	if strings.TrimSpace(getAttr(n, "alt")) != "" {
+		return false
+	}
+	w := strings.TrimSpace(getAttr(n, "width"))
+	h := strings.TrimSpace(getAttr(n, "height"))
+	return (w == "1" || w == "0") && (h == "1" || h == "0")
+}
+
+// isTemplateOnlyText reports a text node that is entirely an unrendered
+// template expression, e.g. Vue's {{item.code}} or {{sendMatomoQuery(...)}}.
+// Server-rendered pages sometimes leak these into the DOM; they are not prose.
+// Only whole-node expressions are dropped, so text that merely contains
+// "{{...}}" (e.g. a code sample with surrounding explanation) is preserved.
+func isTemplateOnlyText(s string) bool {
+	s = strings.TrimSpace(s)
+	return len(s) >= 4 && strings.HasPrefix(s, "{{") && strings.HasSuffix(s, "}}")
+}
+
+// decorativeAlt are alt texts that describe page decoration, never content.
+var decorativeAlt = map[string]bool{
+	"背景图": true, "背景": true, "图标": true, "icon": true, "logo": true,
+	"arrow": true, "箭头": true, "qrcode": true, "qr": true, "二维码": true,
+	"图片": true, "image": true, "装饰": true, "decorative": true,
+	"avatar": true, "头像": true, "spacer": true, "pixel": true,
+}
+
+// decorativeImageTokens are filename/path tokens that identify icons and
+// other non-content images. Matched as whole tokens, so "vacation.jpg" is safe.
+var decorativeImageTokens = map[string]bool{
+	"icon": true, "icons": true, "logo": true, "logos": true,
+	"arrow": true, "arrows": true, "chevron": true, "caret": true,
+	"sprite": true, "spacer": true, "pixel": true, "placeholder": true,
+	"loading": true, "spinner": true, "bullet": true,
+	"divider": true, "separator": true, "avatar": true,
+	"qrcode": true, "qr": true, "weixin": true, "wechat": true, "weibo": true,
+}
+
+// isDecorativeImage drops icons, logo marks, arrows, QR codes and other
+// decoration that carries no article meaning. Empty alt is the HTML convention
+// for decorative images, so content images with a real alt are always kept.
+func isDecorativeImage(n *html.Node) bool {
+	if strings.EqualFold(strings.TrimSpace(getAttr(n, "role")), "presentation") ||
+		strings.EqualFold(strings.TrimSpace(getAttr(n, "aria-hidden")), "true") {
+		return true
+	}
+	alt := strings.ToLower(strings.TrimSpace(getAttr(n, "alt")))
+	if decorativeAlt[alt] {
+		return true
+	}
+	if alt != "" {
+		return false
+	}
+	// 16/24/32px images without alt are icons.
+	if imageDimensionAtMost(n, "width", 32) || imageDimensionAtMost(n, "height", 32) {
+		return true
+	}
+	src := imageSrc(n)
+	if src == "" {
+		return true
+	}
+	if strings.HasPrefix(strings.ToLower(src), "data:") {
+		return false
+	}
+	p := src
+	if i := strings.IndexAny(p, "?#"); i >= 0 {
+		p = p[:i]
+	}
+	if strings.EqualFold(path.Ext(p), ".svg") {
+		return true
+	}
+	for _, tok := range splitClassTokens(p) {
+		if decorativeImageTokens[tok] {
+			return true
+		}
+	}
+	return false
+}
+
+// imageDimensionAtMost reports a positive numeric width/height attribute at or
+// below max (values like "24", "24px").
+func imageDimensionAtMost(n *html.Node, key string, max int) bool {
+	v := strings.ToLower(strings.TrimSpace(getAttr(n, key)))
+	v = strings.TrimSuffix(v, "px")
+	i, err := strconv.Atoi(v)
+	return err == nil && i > 0 && i <= max
 }
 
 // extractText extracts plain text from a node and its subtree.

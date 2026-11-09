@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"hash/fnv"
 	"log/slog"
 	"net/url"
 	"strings"
@@ -18,6 +19,11 @@ import (
 
 // log returns the module logger lazily (see file/pkg/service/crawl).
 func log() *slog.Logger { return logger.GetLogger("crawler") }
+
+// minDuplicateMarkdownBytes is the size above which byte-identical
+// title+Markdown is treated as a shell duplicate. Below it, identical pages
+// (a one-line FAQ, a test fixture) are kept: their content may be legitimate.
+const minDuplicateMarkdownBytes = 10
 
 // Crawl does a same-domain BFS crawl starting from opts.URL.
 //
@@ -62,48 +68,54 @@ func Crawl(ctx context.Context, opts Options, onProgress func(done int)) (*Resul
 	)
 
 	// process handles one page: fetch → parse DOM → extract links (whole doc) → scope content → render Markdown.
-	process := func(rawURL string) (Page, []string, error) {
+	// It returns primary and secondary links separately so the scheduler can
+	// enqueue content/nav links before header/footer/cross-host chrome.
+	process := func(rawURL string) (Page, []string, []string, error) {
 		base, err := url.Parse(rawURL)
 		if err != nil {
-			return Page{}, nil, fmt.Errorf("invalid url: %w", err)
+			return Page{}, nil, nil, fmt.Errorf("invalid url: %w", err)
 		}
 		body, err := fetcher.Fetch(taskCtx, rawURL)
 		if err != nil {
-			return Page{}, nil, err
+			return Page{}, nil, nil, err
 		}
 		doc, err := html.Parse(bytes.NewReader(body))
 		if err != nil {
-			return Page{}, nil, fmt.Errorf("html parse failed: %w", err)
+			return Page{}, nil, nil, fmt.Errorf("html parse failed: %w", err)
 		}
 
 		// Links are extracted from the **whole document** (design §4.2 step 10),
-		// otherwise nav-bar pagination links are never discovered.
-		links := ExtractLinks(doc, base)
+		// otherwise nav-bar pagination links are never discovered. They are split
+		// into content-first and chrome/off-host classes so maxPage is spent on
+		// the document tree, not the site header/footer.
+		primaryLinks, secondaryLinks := ExtractLinksPrioritized(doc, base)
 
 		scoped, err := parse.SelectNode(doc, opts.Selector)
 		if err != nil {
-			return Page{}, links, err
+			return Page{}, primaryLinks, secondaryLinks, err
 		}
 		// Empty-page rule (design §4.2 step 7): covers "selector matched nothing",
 		// "matched but no text", and "empty body" in one check.
 		if len(scoped) == 0 {
-			return Page{}, links, fmt.Errorf("empty content (selector %q matched nothing)", opts.Selector)
+			return Page{}, primaryLinks, secondaryLinks, fmt.Errorf("empty content (selector %q matched nothing)", opts.Selector)
 		}
 
 		// Bytes were already decoded to UTF-8 in Fetch, so "utf-8" must be passed
 		// here, or the parser re-decodes per <meta charset> and produces mojibake.
 		md, _, err := parse.ParseHTMLBytesToMarkdownWithCharset(taskCtx, scoped, rawURL, "utf-8")
 		if err != nil {
-			return Page{}, links, fmt.Errorf("markdown render failed: %w", err)
+			return Page{}, primaryLinks, secondaryLinks, fmt.Errorf("markdown render failed: %w", err)
 		}
 		if strings.TrimSpace(md) == "" {
-			return Page{}, links, fmt.Errorf("empty content (selector %q produced no text)", opts.Selector)
+			return Page{}, primaryLinks, secondaryLinks, fmt.Errorf("empty content (selector %q produced no text)", opts.Selector)
 		}
-		return Page{URL: rawURL, Title: extractTitle(doc, rawURL), Markdown: md}, links, nil
+		return Page{URL: rawURL, Title: extractTitle(doc, rawURL), Markdown: md}, primaryLinks, secondaryLinks, nil
 	}
 
 	// visited must persist across levels: rebuilding per level re-enqueues fetched pages.
 	visited := map[string]bool{entry.String(): true}
+	// seenContent persists across levels too: tab shells repeat on later levels.
+	seenContent := make(map[uint64]struct{})
 	frontier := []string{entry.String()}
 	for len(frontier) > 0 {
 		if taskCtx.Err() != nil {
@@ -122,10 +134,11 @@ func Crawl(ctx context.Context, opts Options, onProgress func(done int)) (*Resul
 		}
 
 		type pageResult struct {
-			url   string
-			page  Page
-			links []string
-			err   error
+			url       string
+			page      Page
+			primary   []string
+			secondary []string
+			err       error
 		}
 		results := make([]pageResult, len(batch))
 		sem := make(chan struct{}, opts.Concurrency)
@@ -142,30 +155,51 @@ func Crawl(ctx context.Context, opts Options, onProgress func(done int)) (*Resul
 					results[i] = pageResult{url: u, err: taskCtx.Err()}
 					return
 				}
-				p, links, err := process(u)
-				results[i] = pageResult{url: u, page: p, links: links, err: err}
+				p, primary, secondary, err := process(u)
+				results[i] = pageResult{url: u, page: p, primary: primary, secondary: secondary, err: err}
 			}(i, u)
 		}
 		wg.Wait()
 
-		next := make([]string, 0, len(batch))
+		// Two-pass enqueueing: every primary link from the whole batch enters the
+		// next frontier before any secondary link. This keeps maxPage focused on
+		// content/nav links instead of consuming it on header/footer/cross-host
+		// chrome (e.g. a site's user-agreement page).
+		//
+		// Enqueueing happens **before** the err check (design §4.2 step 10): on the
+		// "selector missed" / "empty content" paths where the page is dropped as
+		// empty, process still returns the links it extracted (see the
+		// `return Page{}, primaryLinks, secondaryLinks, err` sites above). Dropping
+		// them would lose a whole subtree when a nav/aggregator page is discarded.
+		// (Failed fetches have nil links, so this is a no-op there.)
+		nextPrimary := make([]string, 0, len(batch))
 		for _, r := range results {
-			// Link enqueueing must happen **before** the err check (design §4.2
-			// step 10): on the "selector missed" / "empty content" paths where the
-			// page is dropped as empty, process still returns the links it
-			// extracted (see the `return Page{}, links, err` sites above). Putting
-			// this after `continue` would drop those links wholesale — and
-			// nav/aggregator pages are exactly this shape; the cost is a whole
-			// missing subtree while the task reports success.
-			// (Failed fetches have nil links, so this is a no-op there and does not
-			// affect "child-page failure is log-only".)
-			for _, l := range r.links {
-				// Same-domain filter (design §4.2 step 11). Without it the crawler follows all external links.
+			for _, l := range r.primary {
 				if ShouldEnqueue(l, entry, visited) {
 					visited[l] = true
-					next = append(next, l)
+					nextPrimary = append(nextPrimary, l)
 				}
 			}
+		}
+		nextSecondary := make([]string, 0, len(batch))
+		for _, r := range results {
+			for _, l := range r.secondary {
+				if ShouldEnqueue(l, entry, visited) {
+					visited[l] = true
+					nextSecondary = append(nextSecondary, l)
+				}
+			}
+		}
+		next := append(nextPrimary, nextSecondary...)
+
+		// Content dedup: shell pages (tab variants, repeated nav shells) often
+		// produce byte-identical Markdown. They add no knowledge and would consume
+		// the maxPage/byte budget, so keep only the first occurrence.
+		//
+		// Only pages above a small size are deduped, and the title participates in
+		// the key: tiny pages (a one-line FAQ, a test fixture) and same-body pages
+		// with distinct titles are legitimate separate pages, not shell duplicates.
+		for _, r := range results {
 			if r.err != nil {
 				// Child-page failure is log-only (design §5); entry-page failure is recorded as the task-level reason.
 				log().Warn("html crawl page skipped", "url", r.url, "reason", r.err.Error())
@@ -173,6 +207,18 @@ func Crawl(ctx context.Context, opts Options, onProgress func(done int)) (*Resul
 					entryErr = r.err
 				}
 				continue
+			}
+			if len(r.page.Markdown) >= minDuplicateMarkdownBytes {
+				h := fnv.New64a()
+				_, _ = h.Write([]byte(r.page.Title))
+				_, _ = h.Write([]byte{0})
+				_, _ = h.Write([]byte(r.page.Markdown))
+				key := h.Sum64()
+				if _, dup := seenContent[key]; dup {
+					log().Debug("html crawl duplicate page skipped", "url", r.url)
+					continue
+				}
+				seenContent[key] = struct{}{}
 			}
 			// opts.MaxTaskBytes <= 0 means **unlimited** here — intentionally
 			// different from the `<=0 → default` rule for MaxPage/Concurrency/

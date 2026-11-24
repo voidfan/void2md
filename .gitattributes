@@ -1,0 +1,3 @@
+# 让 GitHub 的语言统计忽略测试样例。
+# 单个内嵌 base64 图片输出的 notebook 可达数 MB，会压过全部 Go + Rust 源码。
+file/TestCase/** linguist-documentation
